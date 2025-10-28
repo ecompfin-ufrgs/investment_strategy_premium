@@ -3,7 +3,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 from pyacm import NominalACM
-
+from scipy.stats import jarque_bera
+import numpy as np
+from scipy.stats import rankdata
 
 #%% Functions
 def plot_data(data):
@@ -121,7 +123,7 @@ def run_acm(data):
     return acm, tp_df
 
 
-#%% Run Functions
+#%% Run Functions - Plots, Stats and Run ACM
 #Data
 df_curves = r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\data_colection\curvas_b3.parquet"
 
@@ -132,3 +134,74 @@ stats_df = descriptive_stats(df, [1, 12, 36, 60, 120])
 
 # Model ACM
 acm, premia = run_acm(df_curves)
+
+# Vertices semestrais
+colunas_int = [int(c) for c in premia.columns]
+semesters = [c for c in colunas_int if c % 6 == 0]
+premia = premia[semesters]
+
+#%% Normality test
+
+def normality_test_cumulative_data(df):
+    
+    alpha: float = 0.05
+    
+    results = []
+
+    for column_name in df.columns:
+        serie = df[column_name].dropna()
+
+        for i in range(1, len(serie)):  # começar do segundo ponto
+            if i < 30:  # só calcular quando houver pelo menos 30 observações acumuladas
+                continue
+
+            data_atual = serie.index[i]
+            janela = serie.iloc[:i]  # todos os dados passados até a data atual
+
+            if janela.std() > 0:
+                jb_stat, p_val = jarque_bera(janela)
+                interpretation = 'NORMAL' if p_val > alpha else 'NON_NORMAL'
+            else:
+                jb_stat, p_val, interpretation = np.nan, np.nan, 'Não aplicável'
+
+            results.append({
+                'Date': data_atual,
+                'maturity': column_name,
+                'JB_stat': jb_stat,
+                'p-value': p_val,
+                'interpretation': interpretation
+            })
+
+    return pd.DataFrame(results)
+
+cumulative_normality = normality_test_cumulative_data(premia)
+
+#%% Percentiles
+
+def cumulative_percentile(df):
+
+    percentiles = pd.DataFrame(index=df.index, columns=df.columns, dtype=float)
+
+    for col in df.columns:
+        serie = df[col].dropna()
+        pct_list = []
+
+        for i in range(len(serie)):
+            if i+1 < 252:  # apenas começar a calcular com pelo menos 30 observações
+                pct_list.append(float('nan'))
+                continue
+
+            janela = serie.iloc[:i+1]  # todos os dados passados até a data atual
+            obs = serie.iloc[i]
+
+            # Percentil: (posição do valor na ordenação / tamanho da janela) * 100
+            rank = rankdata(janela, method='average')  # rank dentro da janela
+            pct = rank[-1] / len(janela) * 100  # percentil da observação atual
+            pct_list.append(pct)
+
+        percentiles[col] = pct_list
+
+    return percentiles
+
+percentis = cumulative_percentile(premia)
+
