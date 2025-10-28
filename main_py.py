@@ -202,6 +202,62 @@ def cumulative_percentile(df):
         percentiles[col] = pct_list
 
     return percentiles
-
+ 
 percentis = cumulative_percentile(premia)
+
+#%% IQR import pandas as pd
+
+import matplotlib.pyplot as plt
+
+# Parâmetros
+col = 60         # vértice alvo
+k = 1.5          # fator multiplicador do IQR
+window = 756     # janela rolling (~3 anos úteis)
+
+# Série alvo
+serie = premia[col]
+
+# Rolling quantis e IQR
+q1_roll = serie.rolling(window=window, min_periods=window).quantile(0.25)
+q3_roll = serie.rolling(window=window, min_periods=window).quantile(0.75)
+iqr_roll = q3_roll - q1_roll
+lower_roll = q1_roll - k * iqr_roll
+upper_roll = q3_roll + k * iqr_roll
+
+# Dummy 0/1 de outlier
+outlier_dummy = ((serie < lower_roll) | (serie > upper_roll)).astype(int)
+outlier_dummy.name = 'outlier_60'
+
+# Juntar com a série original
+premia_out = premia[[col]].copy()
+premia_out['outlier_60'] = outlier_dummy
+
+# --- Gráfico ---
+plt.figure(figsize=(12, 6))
+plt.plot(premia_out.index, premia_out[col], label=f'Prêmio {col} meses', color='steelblue')
+
+# Limites IQR
+plt.plot(lower_roll.index, lower_roll, color='gray', linestyle='--', linewidth=1, alpha=0.6, label='Limite inferior')
+plt.plot(upper_roll.index, upper_roll, color='gray', linestyle='--', linewidth=1, alpha=0.6, label='Limite superior')
+
+# Destacar outliers
+plt.scatter(
+    premia_out.index[premia_out['outlier_60'] == 1],
+    premia_out[col][premia_out['outlier_60'] == 1],
+    color='red', label='Outliers (IQR rolling 756)', zorder=5
+)
+
+plt.title(f'Outliers pelo IQR Rolling (756 observações) - Vértice {col} meses')
+plt.xlabel('Data')
+plt.ylabel('Prêmio')
+plt.legend()
+plt.tight_layout()
+
+# Caminho de salvamento
+path = r'C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\outliers_IQR_60m.png'
+plt.savefig(path, dpi=300)
+plt.close()
+
+print(f'Gráfico salvo em: {path}')
+
 
