@@ -10,6 +10,7 @@ from pandas.tseries.offsets import BMonthBegin
 import pandas_market_calendars as pmc
 pd.set_option('display.max_columns', None)
 
+
 #%% Data analytics
 def plot_data(data):
     # Ler dados
@@ -134,8 +135,8 @@ def run_acm(data):
 
 #%% Run Functions - Plots, Stats and Run ACM
 #Data
-df_curves = r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\data_colection\curvas_b3.parquet"
-#df_curves = r"\\nas03\gestao_recursos\Pessoais\Bernardo\premia\curvas_b3.parquet"
+#df_curves = r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\data_colection\curvas_b3.parquet"
+df_curves = r"\\nas03\gestao_recursos\Pessoais\Bernardo\premia\curvas_b3.parquet"
 
 
 # Plot
@@ -380,6 +381,78 @@ adf_full_all = adf_test_full_all(
 
 
 
+#%% DI1
+
+di = pd.read_parquet(r"\\nas03\gestao_recursos\Pessoais\Bernardo\premia\data_di1.parquet")
+#di = pd.read_parquet(r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\data_colection\data_di1.parquet")
+di.drop(columns={'price_previous', 'change', 'settlement_value'}, inplace=True)
+
+# Ajustes no di1
+#### VENCIMENTO e Dus
+
+def add_vencimento_e_dus(di):
+    
+    meses_pt = {
+        'JAN': 1, 'FEV': 2, 'MAR': 3, 'ABR': 4, 'MAI': 5, 'JUN': 6,
+        'JUL': 7, 'AGO': 8, 'SET': 9, 'OUT': 10, 'NOV': 11, 'DEZ': 12
+    }
+
+    meses_b3 = {
+        'F': 1, 'G': 2, 'H': 3, 'J': 4, 'K': 5, 'M': 6,
+        'N': 7, 'Q': 8, 'U': 9, 'V': 10, 'X': 11, 'Z': 12
+    }
+    
+    def _venc(row):
+        code = str(row["maturity_code"]).upper().strip()
+        ref = pd.Timestamp(row["refdate"])
+        if code[:3] in meses_pt:
+            mes, ano = meses_pt[code[:3]], int(code[3:])
+        elif code[0] in meses_b3:
+            mes, ano = meses_b3[code[0]], int(code[1:])
+        else:
+            return pd.NaT
+        ano += 2000
+        v = pd.Timestamp(ano, mes, 1) + BMonthBegin()
+        while v < ref:
+            ano += 10
+            v = pd.Timestamp(ano, mes, 1) + BMonthBegin()
+        return v
+    
+    di["refdate"] = pd.to_datetime(di["refdate"], errors="coerce")
+    di["vencimento"] = di.apply(_venc, axis=1).astype("datetime64[ns]")
+    
+    cal = pmc.get_calendar("B3")
+    start = pd.to_datetime(pd.concat([di["refdate"], di["vencimento"]]).min()).normalize() - pd.Timedelta(days=5)
+    end   = pd.to_datetime(pd.concat([di["refdate"], di["vencimento"]]).max()).normalize() + pd.Timedelta(days=5)
+    sch = cal.schedule(start_date=start, end_date=end)
+    
+    trading = pd.DatetimeIndex(sch.index).tz_localize(None).normalize().unique().sort_values()
+    t_np = trading.values.astype("datetime64[D]")
+    
+    r = di["refdate"].dt.normalize().values.astype("datetime64[D]")
+    v = di["vencimento"].dt.normalize().values.astype("datetime64[D]")
+    mask = ~pd.isna(r) & ~pd.isna(v)
+    out = np.full(len(di), np.nan, dtype="float")
+    if mask.any():
+        ir = np.searchsorted(t_np, r[mask], side="right")
+        iv = np.searchsorted(t_np, v[mask], side="right")
+        out[mask] = (iv - ir).astype(float)
+    
+    di["maturity_days"] = pd.Series(out, index=di.index).astype("Int64")
+    return di
+
+di = add_vencimento_e_dus(di)
+
+
+####### !!!!!!!!!!!!!
+"""FILTRO DI (SEMANAL) > PREMIO"""
+premia.reset_index(inplace=True)
+premia = premia[premia['Date'].isin(di['refdate'])]
+premia["Date"] = pd.to_datetime(premia["Date"])
+premia = premia.set_index("Date")
+
+
+
 #%% HBOS
 
 # HBOS (Histogram-Based Outlier Score) rolante para a coluna de 60 meses do DataFrame `premia`
@@ -399,9 +472,72 @@ def hbos_rolling(
     col_label=None
 ) -> pd.DataFrame:
     """
-    Calcula HBOS univariado em janela rolante.
-    Se col_label=None, aplica para todas as colunas e retorna DataFrame concatenado.
-    Adiciona coluna 'outlier_type' indicando 'max' ou 'min' quando 'is_outlier' é True.
+    Calcula o HBOS (Histogram-Based Outlier Score) univariado em janela rolante e classifica o tipo
+    de outlier ('max' ou 'min') com base nos quantis da janela. Remove as primeiras `n` observações
+    por vértice (coluna) do DataFrame de retorno, que são naturalmente indisponíveis para o cálculo
+    rolante (janelas iniciais).
+
+    Visão geral do método:
+    - Para cada janela de tamanho `n`, constrói-se um histograma dos valores válidos (não-NaN).
+    - A densidade por bin é suavizada por `epsilon` e normalizada pela largura do bin.
+    - O HBOS do último valor da janela é o negativo do log da densidade do bin em que ele cai.
+    - O limiar (threshold) de outlier é o quantil `q` da distribuição de HBOS dentro da janela.
+    - O tipo de outlier é rotulado como:
+        * 'max' se o último valor da janela >= quantil `q` dos valores da janela;
+        * 'min' se o último valor da janela <= quantil `1 - q` dos valores da janela;
+        * None caso contrário.
+    - As `n` primeiras observações por vértice são removidas do retorno para evitar linhas iniciais
+      sem escore/limiar (efeito de borda da janela).
+
+    Parâmetros
+    ----------
+    df : pd.DataFrame
+        DataFrame com índice temporal (ou ordenável) e colunas numéricas (cada coluna = um vértice).
+    n : int
+        Tamanho da janela rolante (ex.: 252).
+    bins : int, padrão 20
+        Número de bins do histograma em cada janela.
+    binning : {"quantile", "uniform"}, padrão "quantile"
+        Estratégia de construção dos bins:
+        - "quantile": arestas dos bins pelos quantis igualmente espaçados da amostra da janela.
+        - "uniform": arestas igualmente espaçadas entre min e max da amostra da janela.
+    q : float, padrão 0.99
+        Quantil usado para:
+        - Definir o threshold do HBOS (quantil `q` do HBOS na janela).
+        - Classificar outliers por valor (quantis `q` e `1 - q` dos valores da janela).
+    epsilon : float, padrão 1e-6
+        Suavização numérica para evitar densidades/lagaritmos nulos ou infinidades.
+    col_label : hashable ou None, padrão None
+        Se informado, aplica apenas à coluna especificada. Se None, aplica a todas as colunas
+        e concatena os resultados com a coluna adicional 'maturity' indicando o vértice.
+
+    Retorno
+    -------
+    pd.DataFrame
+        Para `col_label=None`: DataFrame concatenado com todas as colunas (vértices),
+        contendo:
+            - value: valor original da série.
+            - HBOS_score: escore HBOS do último ponto de cada janela.
+            - threshold: quantil `q` do HBOS na janela (limiar de outlier).
+            - is_outlier: booleano, True se HBOS_score > threshold.
+            - outlier_type: "max", "min" ou None conforme classificação na janela.
+            - maturity: nome da coluna (vértice).
+        As primeiras `n` linhas de cada vértice são removidas do retorno.
+
+        Para `col_label` definido: mesmo conjunto de colunas (sem 'maturity').
+        As primeiras `n` linhas são removidas do retorno.
+
+    Notas
+    -----
+    - O índice de `df` é ordenado antes do processamento por coluna.
+    - Para binning "quantile", arestas iguais são desempatadas por um pequeno incremento (eps).
+    - Quando a janela contém apenas NaN, o escore do ponto final permanece NaN.
+    - Complexidade aproximada: O(T * (custo do histograma por janela)), onde T é o número de pontos.
+
+    Exemplo
+    -------
+    >>> res = hbos_rolling(df, n=252, bins=20, binning="quantile", q=0.99)
+    >>> res_single = hbos_rolling(df, n=252, col_label="DI1_252")
     """
 
     def _compute_histogram_edges(x_vals: np.ndarray, _bins: int, _binning: str) -> np.ndarray:
@@ -440,7 +576,6 @@ def hbos_rolling(
         x_last = x_win[-1]
         if np.isnan(x_last):
             return np.nan
-
         bin_idx = np.searchsorted(edges, x_last, side="right") - 1
         bin_idx = np.clip(bin_idx, 0, len(dens) - 1)
 
@@ -522,14 +657,29 @@ def hbos_rolling(
             temp = _process_column(df[col])
             temp["maturity"] = col
             frames.append(temp)
-        return pd.concat(frames).sort_index()
 
-    return _process_column(df[col_label])
+        result = pd.concat(frames).sort_index()
+
+        # Remove as primeiras n observações por vértice (maturity)
+        if isinstance(n, int) and n > 1:
+            result["__ord__"] = result.groupby("maturity").cumcount()
+            result = result[result["__ord__"] >= n].drop(columns="__ord__")
+
+        return result
+
+    res = _process_column(df[col_label])
+
+    # Remove as primeiras n observações na coluna especificada
+    if isinstance(n, int) and n > 1 and n <= len(res):
+        res = res.iloc[n:]
+
+    return res
+
 
 # Exemplo de chamada para todas as colunas com janela n=126 (21*6)
-resultado = hbos_rolling(
+hbos = hbos_rolling(
     df=premia,
-    n=(252),           # tamanho da janela
+    n=(52),           # tamanho da janela
     bins=20,
     binning="quantile",
     q=0.95,
@@ -537,76 +687,14 @@ resultado = hbos_rolling(
     col_label=None   # None = processa todas as colunas
 )
 
-#%% DI1
-
-#di = pd.read_parquet(r"\\nas03\gestao_recursos\Pessoais\Bernardo\premia\data_di1.parquet")
-di = pd.read_parquet(r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\data_colection\data_di1.parquet")
-
-
-# Ajustes no di1
-#### VENCIMENTO e Dus
-
-def add_vencimento_e_dus(di):
-    
-    meses_pt = {
-        'JAN': 1, 'FEV': 2, 'MAR': 3, 'ABR': 4, 'MAI': 5, 'JUN': 6,
-        'JUL': 7, 'AGO': 8, 'SET': 9, 'OUT': 10, 'NOV': 11, 'DEZ': 12
-    }
-
-    meses_b3 = {
-        'F': 1, 'G': 2, 'H': 3, 'J': 4, 'K': 5, 'M': 6,
-        'N': 7, 'Q': 8, 'U': 9, 'V': 10, 'X': 11, 'Z': 12
-    }
-    
-    def _venc(row):
-        code = str(row["maturity_code"]).upper().strip()
-        ref = pd.Timestamp(row["refdate"])
-        if code[:3] in meses_pt:
-            mes, ano = meses_pt[code[:3]], int(code[3:])
-        elif code[0] in meses_b3:
-            mes, ano = meses_b3[code[0]], int(code[1:])
-        else:
-            return pd.NaT
-        ano += 2000
-        v = pd.Timestamp(ano, mes, 1) + BMonthBegin()
-        while v < ref:
-            ano += 10
-            v = pd.Timestamp(ano, mes, 1) + BMonthBegin()
-        return v
-    
-    di["refdate"] = pd.to_datetime(di["refdate"], errors="coerce")
-    di["vencimento"] = di.apply(_venc, axis=1).astype("datetime64[ns]")
-    
-    cal = pmc.get_calendar("B3")
-    start = pd.to_datetime(pd.concat([di["refdate"], di["vencimento"]]).min()).normalize() - pd.Timedelta(days=5)
-    end   = pd.to_datetime(pd.concat([di["refdate"], di["vencimento"]]).max()).normalize() + pd.Timedelta(days=5)
-    sch = cal.schedule(start_date=start, end_date=end)
-    
-    trading = pd.DatetimeIndex(sch.index).tz_localize(None).normalize().unique().sort_values()
-    t_np = trading.values.astype("datetime64[D]")
-    
-    r = di["refdate"].dt.normalize().values.astype("datetime64[D]")
-    v = di["vencimento"].dt.normalize().values.astype("datetime64[D]")
-    mask = ~pd.isna(r) & ~pd.isna(v)
-    out = np.full(len(di), np.nan, dtype="float")
-    if mask.any():
-        ir = np.searchsorted(t_np, r[mask], side="right")
-        iv = np.searchsorted(t_np, v[mask], side="right")
-        out[mask] = (iv - ir).astype(float)
-    
-    di["maturity_days"] = pd.Series(out, index=di.index).astype("Int64")
-    return di
-
-di = add_vencimento_e_dus(di)
-
 #%% Backteste # #### TESTE 1
-premio_sinal = resultado[resultado['maturity'] == 6]
-premio_sinal['maturity_days'] = premio_sinal['maturity'] * 21
-premio_sinal.dropna(subset='HBOS_score', inplace=True)
+# premio_sinal = resultado[resultado['maturity'] == 6]
+# premio_sinal['maturity_days'] = premio_sinal['maturity'] * 21
+# premio_sinal.dropna(subset='HBOS_score', inplace=True)
 
 
-premio_sinal.reset_index(inplace=True)
-premio_sinal.rename(columns={'Date':'refdate', }, inplace=True)
+# premio_sinal.reset_index(inplace=True)
+# premio_sinal.rename(columns={'Date':'refdate', }, inplace=True)
 
 # ##### Merge di + sinal
 # # garantir cópias e tipos corretos (evitar SettingWithCopyWarning)
@@ -758,142 +846,421 @@ premio_sinal.rename(columns={'Date':'refdate', }, inplace=True)
 
 #%% Função de trading v2
 
-def backtest(resultado, di, maturity_target=6, contracts_per_trade=10, stop_loss_pct=0.10, trading_tol='252d'):
+
+# def backtest(resultado, di, maturity_target=6, contracts_per_trade=10, stop_loss_pct=0.10, trading_tol='252d'):
+#     """
+#     Backtest de trading em DI usando sinais de prêmio.
+    
+#     Parâmetros:
+#     - resultado: DataFrame com sinais (colunas: Date, value, HBOS_score, outlier_type, maturity)
+#     - di: DataFrame com contratos DI (colunas: refdate, symbol, price, vencimento, maturity_days)
+#     - maturity_target: maturidade em meses para filtrar prêmio
+#     - contracts_per_trade: número de contratos por operação
+#     - stop_loss_pct: stop em percentual
+#     - trading_tol: tolerância para mapear refdate do prêmio ao DI
+    
+#     Retorna:
+#     - final: DataFrame pronto para análise/trading
+#     """
+    
+#     # ===== 1. Preparar sinais =====
+#     premio_sinal = resultado[resultado['maturity'] == maturity_target].copy()
+#     premio_sinal['maturity_days'] = premio_sinal['maturity'] * 21
+#     premio_sinal.dropna(subset=['HBOS_score'], inplace=True)
+    
+#     if premio_sinal.empty:
+#         raise ValueError(f"Nenhum sinal encontrado para maturity_target = {maturity_target}. O backtest não pode continuar.")
+    
+#     premio_sinal = premio_sinal.reset_index()
+#     premio_sinal.rename(columns={'Date': 'refdate'}, inplace=True)
+#     premio_sinal['orig_idx'] = premio_sinal.index
+    
+#     # ===== 2. Merge com DI =====
+#     premio_sinal['refdate'] = pd.to_datetime(premio_sinal['refdate'])
+#     di['refdate'] = pd.to_datetime(di['refdate'])
+    
+#     trading_dates = pd.DatetimeIndex(sorted(di['refdate'].unique()))
+#     pos = trading_dates.get_indexer(premio_sinal['refdate'], method='nearest', tolerance=pd.Timedelta(trading_tol))
+#     premio_sinal['refdate_trading'] = pd.to_datetime([trading_dates[i] if i != -1 else pd.NaT for i in pos])
+    
+#     merged = premio_sinal.merge(
+#         di,
+#         left_on='refdate_trading',
+#         right_on='refdate',
+#         how='left',
+#         suffixes=('_premio', '_di')
+#     )
+    
+#     merged['maturity_diff'] = (merged['maturity_days_premio'] - merged['maturity_days_di']).abs()
+    
+#     def pick_min_df(df):
+#         if df['maturity_days_di'].isna().all():
+#             return df.iloc[0]
+#         else:
+#             return df.loc[df['maturity_diff'].idxmin()]
+    
+#     picked = merged.groupby('orig_idx', group_keys=False).apply(pick_min_df).reset_index(drop=True)
+    
+#     picked.rename(columns={'maturity_days_di': 'maturity_days'}, inplace=True)
+    
+#     final_cols = ['refdate_premio', 'value', 'outlier_type', 'maturity', 'maturity_days',
+#                   'symbol', 'price', 'vencimento']
+#     picked.rename(columns={'refdate':'refdate_premio'}, inplace=True)
+#     final = picked[final_cols].copy()
+    
+#     # ===== 3. Backtest =====
+#     final = final.sort_values('refdate_premio').reset_index(drop=True)
+    
+#     # << CORREÇÃO DEFINITIVA AQUI: Preencher preços NaN com o último valor válido >>
+#     final['price'].fillna(method='ffill', inplace=True)
+    
+#     # Inicializar colunas
+#     final['position'] = 0
+#     final['entry_price'] = np.nan
+#     final['max_pnl_since_entry'] = 0.0
+#     final['notional'] = 0.0
+#     final['pnl'] = 0.0
+#     final['pnl_cumsum'] = 0.0
+#     final['stop'] = False
+#     final['rollover'] = False
+#     final['symbol_prev'] = final['symbol'].shift(1)
+    
+#     # Estados internos
+#     position = 0
+#     entry_price = np.nan
+#     pnl_cumsum = 0.0
+#     max_pnl_since_entry = 0.0
+#     symbol_atual = None
+    
+#     for i in range(1, len(final)):
+#         price_prev = final.loc[i - 1, 'price']
+#         price_now = final.loc[i, 'price']
+#         symbol_now = final.loc[i, 'symbol']
+#         symbol_prev = final.loc[i - 1, 'symbol']
+        
+#         pnl = -position * (price_now - price_prev)
+#         pnl_cumsum += pnl
+        
+#         if position != 0 and symbol_now != symbol_prev:
+#             final.loc[i, 'rollover'] = True
+#             entry_price = price_now
+#             max_pnl_since_entry = 0.0
+#             symbol_atual = symbol_now
+            
+#         if position != 0:
+#             pnl_trade = -position * (price_now - entry_price)
+#             max_pnl_since_entry = max(max_pnl_since_entry, pnl_trade)
+            
+#             if max_pnl_since_entry > 0:
+#                 drawdown = (max_pnl_since_entry - pnl_trade) / max_pnl_since_entry
+#                 if drawdown >= stop_loss_pct:
+#                     position = 0
+#                     entry_price = np.nan
+#                     max_pnl_since_entry = 0.0
+#                     final.loc[i, 'stop'] = True
+        
+#         if position == 0 and not final.loc[i, 'stop']:
+#             if final.loc[i, 'outlier_type'] == 'min':
+#                 position = contracts_per_trade
+#                 entry_price = price_now
+#                 symbol_atual = symbol_now
+#             elif final.loc[i, 'outlier_type'] == 'max':
+#                 position = -contracts_per_trade
+#                 entry_price = price_now
+#                 symbol_atual = symbol_now
+        
+#         final.loc[i, 'position'] = position
+#         final.loc[i, 'entry_price'] = entry_price
+#         final.loc[i, 'max_pnl_since_entry'] = max_pnl_since_entry
+#         final.loc[i, 'notional'] = position * price_now
+#         final.loc[i, 'pnl'] = pnl
+#         final.loc[i, 'pnl_cumsum'] = pnl_cumsum
+    
+#     return final
+
+# df_backtest = backtest(
+#     resultado=resultado,  # Use seu DataFrame 'resultado' aqui
+#     di=di,                # Use seu DataFrame 'di' aqui
+#     maturity_target=6,
+#     contracts_per_trade=10,
+#     stop_loss_pct=0.10,
+#     trading_tol='5d' # Reduzindo a tolerância para o exemplo
+# )
+
+#%% BACKTEST 3
+
+"""
+Backtest para o DI:
+- Compra contrato no sinal Min
+- Vende contrato no sinal Max
+- Stop em drawdwown de 5%    
+- Considerar rolagem dos contratos
+"""
+
+"Filtros Iniciais - iniciar com vertice de 6 meses"
+sinal = hbos[hbos['maturity'] == 6]
+sinal['maturity_days'] = 6 * 21
+
+"MERGE DI + SINAL DE TRADING"
+
+def join_sinal_di_nearest_maturity(sinal: pd.DataFrame, di: pd.DataFrame) -> pd.DataFrame:
     """
-    Backtest de trading em DI usando sinais de prêmio.
-    
-    Parâmetros:
-    - resultado: DataFrame com sinais (colunas: Date, value, HBOS_score, outlier_type, maturity)
-    - di: DataFrame com contratos DI (colunas: refdate, symbol, price, vencimento, maturity_days)
-    - maturity_target: maturidade em meses para filtrar prêmio
-    - contracts_per_trade: número de contratos por operação
-    - stop_loss_pct: stop em percentual
-    - trading_tol: tolerância para mapear refdate do prêmio ao DI
-    
-    Retorna:
-    - final: DataFrame pronto para análise/trading
+    Une `sinal` e `di` por data escolhendo, para cada Date de `sinal`, o contrato de `di`
+    na mesma `refdate` cuja `maturity_days` é a mais próxima (diferença absoluta mínima)
+    da `maturity_days` do `sinal`.
+
+    Parâmetros
+    ----------
+    sinal : pd.DataFrame
+        DataFrame indexado por 'Date' (DatetimeIndex) contendo, no mínimo, a coluna 'maturity_days'.
+    di : pd.DataFrame
+        DataFrame contendo, no mínimo, as colunas 'refdate' (datas) e 'maturity_days'.
+
+    Retorno
+    -------
+    pd.DataFrame
+        DataFrame indexado por 'Date' com todas as colunas originais de `sinal` e as colunas do
+        contrato selecionado de `di`. Colunas com mesmo nome entre `sinal` e `di` são
+        desambiguadas com sufixo `_di` no lado de `di`.
     """
-    
-    # ===== 1. Preparar sinais =====
-    premio_sinal = resultado[resultado['maturity'] == maturity_target].copy()
-    premio_sinal['maturity_days'] = premio_sinal['maturity'] * 21
-    premio_sinal.dropna(subset=['HBOS_score'], inplace=True)
-    
-    if premio_sinal.empty:
-        raise ValueError(f"Nenhum sinal encontrado para maturity_target = {maturity_target}. O backtest não pode continuar.")
-    
-    premio_sinal = premio_sinal.reset_index()
-    premio_sinal.rename(columns={'Date': 'refdate'}, inplace=True)
-    premio_sinal['orig_idx'] = premio_sinal.index
-    
-    # ===== 2. Merge com DI =====
-    premio_sinal['refdate'] = pd.to_datetime(premio_sinal['refdate'])
-    di['refdate'] = pd.to_datetime(di['refdate'])
-    
-    trading_dates = pd.DatetimeIndex(sorted(di['refdate'].unique()))
-    pos = trading_dates.get_indexer(premio_sinal['refdate'], method='nearest', tolerance=pd.Timedelta(trading_tol))
-    premio_sinal['refdate_trading'] = pd.to_datetime([trading_dates[i] if i != -1 else pd.NaT for i in pos])
-    
-    merged = premio_sinal.merge(
-        di,
-        left_on='refdate_trading',
+    # Cópias para não alterar os objetos originais
+    s = sinal.reset_index().copy()
+    d = di.copy()
+
+    # Normalização dos tipos de data (remove horário e garante datetime)
+    s['Date'] = pd.to_datetime(s['Date']).dt.normalize()
+    d['refdate'] = pd.to_datetime(d['refdate']).dt.normalize()
+
+    # Junção por data (cada Date de s com todos os contratos de d na mesma refdate)
+    merged = s.merge(
+        d,
+        left_on='Date',
         right_on='refdate',
         how='left',
-        suffixes=('_premio', '_di')
+        suffixes=('', '_di')
     )
-    
-    merged['maturity_diff'] = (merged['maturity_days_premio'] - merged['maturity_days_di']).abs()
-    
-    def pick_min_df(df):
-        if df['maturity_days_di'].isna().all():
-            return df.iloc[0]
-        else:
-            return df.loc[df['maturity_diff'].idxmin()]
-    
-    picked = merged.groupby('orig_idx', group_keys=False).apply(pick_min_df).reset_index(drop=True)
-    
-    picked.rename(columns={'maturity_days_di': 'maturity_days'}, inplace=True)
-    
-    final_cols = ['refdate_premio', 'value', 'outlier_type', 'maturity', 'maturity_days',
-                  'symbol', 'price', 'vencimento']
-    picked.rename(columns={'refdate':'refdate_premio'}, inplace=True)
-    final = picked[final_cols].copy()
-    
-    # ===== 3. Backtest =====
-    final = final.sort_values('refdate_premio').reset_index(drop=True)
-    
-    # << CORREÇÃO DEFINITIVA AQUI: Preencher preços NaN com o último valor válido >>
-    final['price'].fillna(method='ffill', inplace=True)
-    
-    # Inicializar colunas
-    final['position'] = 0
-    final['entry_price'] = np.nan
-    final['max_pnl_since_entry'] = 0.0
-    final['notional'] = 0.0
-    final['pnl'] = 0.0
-    final['pnl_cumsum'] = 0.0
-    final['stop'] = False
-    final['rollover'] = False
-    final['symbol_prev'] = final['symbol'].shift(1)
-    
-    # Estados internos
-    position = 0
-    entry_price = np.nan
-    pnl_cumsum = 0.0
-    max_pnl_since_entry = 0.0
-    symbol_atual = None
-    
-    for i in range(1, len(final)):
-        price_prev = final.loc[i - 1, 'price']
-        price_now = final.loc[i, 'price']
-        symbol_now = final.loc[i, 'symbol']
-        symbol_prev = final.loc[i - 1, 'symbol']
-        
-        pnl = -position * (price_now - price_prev)
-        pnl_cumsum += pnl
-        
-        if position != 0 and symbol_now != symbol_prev:
-            final.loc[i, 'rollover'] = True
-            entry_price = price_now
-            max_pnl_since_entry = 0.0
-            symbol_atual = symbol_now
-            
-        if position != 0:
-            pnl_trade = -position * (price_now - entry_price)
-            max_pnl_since_entry = max(max_pnl_since_entry, pnl_trade)
-            
-            if max_pnl_since_entry > 0:
-                drawdown = (max_pnl_since_entry - pnl_trade) / max_pnl_since_entry
-                if drawdown >= stop_loss_pct:
-                    position = 0
-                    entry_price = np.nan
-                    max_pnl_since_entry = 0.0
-                    final.loc[i, 'stop'] = True
-        
-        if position == 0 and not final.loc[i, 'stop']:
-            if final.loc[i, 'outlier_type'] == 'min':
-                position = contracts_per_trade
-                entry_price = price_now
-                symbol_atual = symbol_now
-            elif final.loc[i, 'outlier_type'] == 'max':
-                position = -contracts_per_trade
-                entry_price = price_now
-                symbol_atual = symbol_now
-        
-        final.loc[i, 'position'] = position
-        final.loc[i, 'entry_price'] = entry_price
-        final.loc[i, 'max_pnl_since_entry'] = max_pnl_since_entry
-        final.loc[i, 'notional'] = position * price_now
-        final.loc[i, 'pnl'] = pnl
-        final.loc[i, 'pnl_cumsum'] = pnl_cumsum
-    
-    return final
 
-df_backtest = backtest(
-    resultado=resultado,  # Use seu DataFrame 'resultado' aqui
-    di=di,                # Use seu DataFrame 'di' aqui
-    maturity_target=6,
-    contracts_per_trade=10,
-    stop_loss_pct=0.10,
-    trading_tol='5d' # Reduzindo a tolerância para o exemplo
+    # Diferença absoluta em dias de maturidade (sinal vs di)
+    # Observação: após o merge, a 'maturity_days' de `di` vira 'maturity_days_di'
+    merged['abs_diff_maturity'] = (merged['maturity_days'] - merged['maturity_days_di']).abs()
+
+    # Para datas sem match em `di`, o merge gera linha(s) com NaN; usar +inf para idxmin selecionar essa linha
+    merged['abs_diff_maturity_filled'] = merged['abs_diff_maturity'].fillna(np.inf)
+
+    # Seleciona, para cada Date, a linha com menor diferença (se houver empate, pega a primeira)
+    best_idx = merged.groupby('Date', sort=False)['abs_diff_maturity_filled'].idxmin()
+    out = merged.loc[best_idx].copy()
+
+    # Limpeza de colunas auxiliares
+    out.drop(columns=['abs_diff_maturity', 'abs_diff_maturity_filled'], inplace=True)
+
+    # Define índice como 'Date'
+    out.set_index('Date', inplace=True)
+
+    return out
+
+trading = join_sinal_di_nearest_maturity(sinal, di)
+
+
+"DINAMICA DE TRADING: Compra e vende, rolagem e stop"
+
+# Considera o contrato de rolagem
+def add_previous_contract_columns(trading: pd.DataFrame, di: pd.DataFrame) -> pd.DataFrame:
+    """
+    Adiciona ao DataFrame `trading`:
+      - 'previous_symbol': contrato antigo (imediatamente anterior) quando há troca;
+      - 'previous_price_on_dt': preço do contrato antigo na mesma data (refdate == Date) da troca;
+      - 'rolagem': True quando ambas as colunas acima estão preenchidas (não-NaN), False caso contrário.
+
+    Pré-requisitos:
+      * `trading` indexado por 'Date' (DatetimeIndex) e contendo: ['refdate','symbol','price'].
+      * `di` contendo: ['refdate','symbol','price'].
+    """
+    tr = trading.copy().sort_index()
+    tr['refdate'] = pd.to_datetime(tr['refdate']).dt.normalize()
+
+    d = di.copy()
+    d['refdate'] = pd.to_datetime(d['refdate']).dt.normalize()
+
+    # Detecta a troca de contrato comparando com a linha anterior
+    tr['previous_symbol'] = tr['symbol'].shift(1)
+
+    # previous_symbol apenas quando houve troca; demais ficam NaN
+    tr.loc[tr['symbol'] == tr['previous_symbol'], 'previous_symbol'] = pd.NA
+
+    # Busca o preço do contrato anterior na mesma refdate da troca
+    tmp = tr.reset_index()[['Date', 'refdate', 'previous_symbol']].rename(columns={'previous_symbol': 'symbol'})
+    tmp = tmp[~tmp['symbol'].isna()].copy()
+
+    prev_prices = tmp.merge(
+        d[['refdate', 'symbol', 'price']],
+        on=['refdate', 'symbol'],
+        how='left'
+    ).rename(columns={'price': 'previous_price_on_dt'})
+
+    # Junta o preço anterior de volta ao trading
+    tr = tr.reset_index().merge(
+        prev_prices[['Date', 'symbol', 'previous_price_on_dt']].rename(columns={'symbol': 'previous_symbol'}),
+        on=['Date', 'previous_symbol'],
+        how='left'
+    ).set_index('Date')
+
+    # Coluna de rolagem: True se ambas as novas colunas estiverem preenchidas
+    tr['rolagem'] = tr['previous_symbol'].notna() & tr['previous_price_on_dt'].notna()
+
+    return tr
+trading = add_previous_contract_columns(trading, di)
+
+# Ajuste financeiro, considerando rolagem
+trading['ajuste_financeiro'] = np.where(
+    trading['rolagem'],
+    trading['previous_price_on_dt'] - trading['price'].shift(1),
+    trading['price'] - trading['price'].shift(1)
 )
+
+
+def build_trading_metrics(
+    trading: pd.DataFrame,
+    n_contratos: int = 1,
+    stop_pct: float = 0.10
+) -> pd.DataFrame:
+    """
+    Regras principais:
+      - Sinais:
+          * Compra (+n_contratos) se outlier_type == 'min'.
+          * Venda  (-n_contratos) se outlier_type == 'max'.
+          * Se já posicionado e vier sinal OPOSTO, vira a mão (±n -> ∓n) para o próximo dia.
+          * Sinal no mesmo sentido apenas mantém (não soma contratos).
+      - PnL diário (com base na posição vigente do próprio dia):
+          * posicao > 0 (comprado):  pnl_dia = -ajuste_financeiro * |posicao|
+          * posicao < 0 (vendido):    pnl_dia =  ajuste_financeiro * |posicao|
+          * posicao == 0:             pnl_dia = 0
+      - Stop por DRAWDOWN do trade:
+          * pnl_acumulado_trade: soma dos pnl_dia desde a última entrada/virada (NaN quando flat).
+          * peak_pnl_trade: MÁXIMO de pnl_acumulado_trade dentro do trade (reinicia a cada trade).
+          * stop_alvo = peak_pnl_trade * (1 - stop_pct)  (somente se peak_pnl_trade > 0).
+          * stop_flag = True no dia em que pnl_acumulado_trade <= stop_alvo.
+          * O stop ajusta a posição do PRÓXIMO dia (zerando), a menos que haja sinal oposto no mesmo dia,
+            caso em que a virada de mão prevalece (abre na direção do sinal no próximo dia).
+
+    Pré-requisitos:
+      * trading contém: ['price', 'ajuste_financeiro', 'outlier_type'] e índice temporal ('Date') ordenável.
+    """
+    df = trading.copy().sort_index()
+
+    # Sanitização de tipos
+    df['price'] = pd.to_numeric(df['price'], errors='coerce')
+    df['ajuste_financeiro'] = pd.to_numeric(df['ajuste_financeiro'], errors='coerce').fillna(0.0)
+
+    # Saídas
+    posicao = []
+    notional = []
+    pnl_list = []
+    pnl_acum_book_list = []
+    pnl_acum_trade_list = []
+    pnl_acum_trade_peak_list = []
+    stop_alvo_list = []
+    stop_flag_list = []
+
+    # Estado
+    pos = 0
+    pnl_acum_book = 0.0
+
+    # Estado do trade (reinicia em cada entrada/virada)
+    pnl_acum_trade = 0.0
+    peak_pnl_trade = 0.0
+
+    size = int(abs(n_contratos))
+
+    for dt, row in df.iterrows():
+        price = row['price']
+        ajuste = row['ajuste_financeiro']
+        signal = row.get('outlier_type', None)
+
+        # 1) PnL do dia com base na posição vigente
+        if pos > 0:
+            pnl_dia = -ajuste * abs(pos)
+        elif pos < 0:
+            pnl_dia =  ajuste * abs(pos)
+        else:
+            pnl_dia = 0.0
+
+        pnl_acum_book += pnl_dia
+
+        # 2) Atualiza métricas do trade corrente (somente quando pos != 0)
+        if pos != 0:
+            pnl_acum_trade += pnl_dia
+            peak_pnl_trade = max(peak_pnl_trade, pnl_acum_trade)
+            pnl_acum_trade_today = pnl_acum_trade
+            peak_pnl_trade_today = peak_pnl_trade
+        else:
+            pnl_acum_trade_today = np.nan
+            peak_pnl_trade_today = np.nan
+
+        # 3) Calcula stop alvo (drawdown do trade: alvo = pico * (1 - stop_pct), apenas se pico > 0)
+        if pos != 0 and peak_pnl_trade > 0:
+            stop_alvo_val = peak_pnl_trade * (1.0 - float(stop_pct))
+        else:
+            stop_alvo_val = np.nan
+
+        # 4) Determina a posição do PRÓXIMO dia
+        next_pos = pos
+        stop_flag_today = False
+
+        # a) Regra de stop por drawdown do trade
+        if pos != 0 and peak_pnl_trade > 0 and not np.isnan(pnl_acum_trade_today):
+            if pnl_acum_trade_today <= stop_alvo_val:
+                next_pos = 0
+                stop_flag_today = True
+
+        # b) Sinal de entrada/virada de mão
+        desired_pos = None
+        if signal == 'min':
+            desired_pos = +size
+        elif signal == 'max':
+            desired_pos = -size
+
+        if desired_pos is not None:
+            if pos == 0 and next_pos == 0:
+                # Estava zerado e não foi stopado -> entra no sentido do sinal
+                next_pos = desired_pos
+            elif pos != 0:
+                # Já posicionado: se sinal oposto, vira a mão (sobrepõe stop para zero)
+                if np.sign(desired_pos) != np.sign(pos):
+                    next_pos = desired_pos
+                # Sinal no mesmo sentido: mantém
+
+        # 5) Registra outputs do dia (posição vigente do próprio dia)
+        posicao.append(pos)
+        notional.append(price * pos if pd.notna(price) else np.nan)
+        pnl_list.append(pnl_dia)
+        pnl_acum_book_list.append(pnl_acum_book)
+        pnl_acum_trade_list.append(pnl_acum_trade_today)
+        pnl_acum_trade_peak_list.append(peak_pnl_trade_today)
+        stop_alvo_list.append(stop_alvo_val)
+        stop_flag_list.append(bool(stop_flag_today))
+
+        # 6) Avança estado para o próximo dia
+        prev_pos = pos
+        pos = next_pos
+
+        # Novo trade começa em 0->±n ou virada de mão (±n -> ∓n) -> reseta métricas do trade
+        if (prev_pos == 0 and pos != 0) or (prev_pos != 0 and pos != 0 and np.sign(prev_pos) != np.sign(pos)):
+            pnl_acum_trade = 0.0
+            peak_pnl_trade = 0.0
+        # Encerramento para 0 (por stop ou ausência de sinal): mantém zerado até próxima entrada
+
+    # Anexa colunas
+    df['posicao'] = pd.Series(posicao, index=df.index, dtype='int64')
+    df['notional'] = pd.Series(notional, index=df.index, dtype='float64')
+    df['pnl'] = pd.Series(pnl_list, index=df.index, dtype='float64')
+    df['pnl_acumulado'] = pd.Series(pnl_acum_book_list, index=df.index, dtype='float64')
+    df['pnl_acumulado_trade'] = pd.Series(pnl_acum_trade_list, index=df.index, dtype='float64')
+    df['pnl_acumulado_trade_peak'] = pd.Series(pnl_acum_trade_peak_list, index=df.index, dtype='float64')
+    df['stop_alvo'] = pd.Series(stop_alvo_list, index=df.index, dtype='float64')
+    df['stop_flag'] = pd.Series(stop_flag_list, index=df.index, dtype='bool')
+
+    return df
+
+
+trading_metric = build_trading_metrics(trading, 1, 0.01)
