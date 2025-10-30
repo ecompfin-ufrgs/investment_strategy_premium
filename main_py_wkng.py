@@ -135,8 +135,8 @@ def run_acm(data):
 
 #%% Run Functions - Plots, Stats and Run ACM
 #Data
-df_curves = r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\data_colection\curvas_b3.parquet"
-#df_curves = r"\\nas03\gestao_recursos\Pessoais\Bernardo\premia\curvas_b3.parquet"
+#df_curves = r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\data_colection\curvas_b3.parquet"
+df_curves = r"\\nas03\gestao_recursos\Pessoais\Bernardo\premia\curvas_b3.parquet"
 
 
 # Plot
@@ -384,8 +384,8 @@ adf_full_all = adf_test_full_all(
 
 #%% DI1
 
-#di = pd.read_parquet(r"\\nas03\gestao_recursos\Pessoais\Bernardo\premia\data_di1.parquet")
-di = pd.read_parquet(r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\data_colection\data_di1.parquet")
+di = pd.read_parquet(r"\\nas03\gestao_recursos\Pessoais\Bernardo\premia\data_di1.parquet")
+#di = pd.read_parquet(r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\data_colection\data_di1.parquet")
 
 di.drop(columns={'price_previous', 'change', 'settlement_value'}, inplace=True)
 
@@ -689,638 +689,18 @@ hbos = hbos_rolling(
     col_label=None   # None = processa todas as colunas
 )
 
-#%% Backteste # #### TESTE 1
-# premio_sinal = resultado[resultado['maturity'] == 6]
-# premio_sinal['maturity_days'] = premio_sinal['maturity'] * 21
-# premio_sinal.dropna(subset='HBOS_score', inplace=True)
-
-
-# premio_sinal.reset_index(inplace=True)
-# premio_sinal.rename(columns={'Date':'refdate', }, inplace=True)
-
-# ##### Merge di + sinal
-# # garantir cópias e tipos corretos (evitar SettingWithCopyWarning)
-# premio = premio_sinal.copy()
-# di2 = di.copy()
-
-# premio.loc[:, 'refdate'] = pd.to_datetime(premio['refdate'])
-# di2.loc[:, 'refdate'] = pd.to_datetime(di2['refdate'])
-
-# # índice original para recolocar depois
-# premio = premio.reset_index(drop=False).rename(columns={'index': 'orig_idx'})
-
-# # índice de dias de negociação disponíveis em di
-# trading_dates = pd.DatetimeIndex(sorted(di2['refdate'].unique()))
-
-# # mapear cada refdate do premio para a data de negociação mais próxima (com tolerância)
-# tolerance = pd.Timedelta('252d')   # ajuste se quiser menor/maior
-# pos = trading_dates.get_indexer(premio['refdate'], method='nearest', tolerance=tolerance)
-
-# # pos == -1 significa sem correspondência dentro da tolerância
-# premio['refdate_trading'] = pd.to_datetime([trading_dates[i] if i != -1 else pd.NaT for i in pos])
-
-# # agora unir (many-to-many) premio com todas as linhas de di2 dessa data de negociação
-# merged = premio.merge(
-#     di2,
-#     left_on='refdate_trading',
-#     right_on='refdate',
-#     how='left',
-#     suffixes=('_premio', '_di')
-# )
-
-# # se quiser ver quantos ficaram sem data de negociação mapeada:
-# n_no_trading = premio['refdate_trading'].isna().sum()
-# print(f'Linhas sem data de negociação dentro de {tolerance}: {n_no_trading}')
-
-# # calcular diferença absoluta de maturity_days e escolher por orig_idx a menor
-# merged['maturity_diff'] = (merged['maturity_days_premio'].astype(float) - merged['maturity_days_di'].astype(float)).abs()
-
-# # para grupos onde não há correspondência (todos NaN), vamos manter uma linha com NaN nos campos do di
-# # selecionar idxmin com cuidado (ignorar grupos vazios)
-# def pick_min_df(df):
-#     if df['maturity_days_di'].isna().all():
-#         # retorna primeira linha (com campos DI vazios) para manter a entrada do premio
-#         return df.iloc[0]
-#     else:
-#         return df.loc[df['maturity_diff'].idxmin()]
-
-# picked = merged.groupby('orig_idx', group_keys=False).apply(pick_min_df).reset_index(drop=True)
-
-# # remontar DataFrame final (opcional: escolher colunas que quer manter)
-# # ex: manter todas colunas do premio + colunas do di com sufixo _di
-# cols_premio = [c for c in picked.columns if c.endswith('_premio') or c in ('orig_idx','refdate_premio','refdate_trading')]
-# cols_di = [c for c in picked.columns if c.endswith('_di') or c in ('vencimento','maturity_days_di')]
-# final = picked  # se preferir filtrar/reordenar, faça aqui
-
-# # exemplo inspecionar discrepâncias grandes
-# # calc % diferença entre maturity_days
-# final['maturity_days_premio'] = final['maturity_days_premio'].astype(float)
-# final['maturity_days_di'] = final['maturity_days_di'].astype(float)
-# final['abs_diff'] = (final['maturity_days_premio'] - final['maturity_days_di']).abs()
-
-# # Limpar colunas
-# final = final[['refdate_premio', 'value', 'outlier_type', 'maturity', 'maturity_days_premio', 'symbol', 'price_previous', 'price', 'vencimento']]
-
-# ### TRADING
-# # Garantir ordenação temporal
-# final = final.sort_values('refdate_premio').reset_index(drop=True)
-
-# # Parâmetros
-# contracts_per_trade = 10
-# stop_loss_pct = 0.10  # 10%
-
-# # Inicialização de colunas
-# final['position'] = 0
-# final['entry_price'] = np.nan
-# final['max_pnl_since_entry'] = 0.0
-# final['notional'] = 0.0
-# final['pnl'] = 0.0
-# final['pnl_cumsum'] = 0.0
-# final['stop'] = False
-# final['rollover'] = False  # nova flag
-# final['symbol_prev'] = final['symbol'].shift(1)
-
-# # Estados internos
-# position = 0
-# entry_price = np.nan
-# pnl_cumsum = 0.0
-# max_pnl_since_entry = 0.0
-# symbol_atual = None
-
-# for i in range(1, len(final)):
-#     price_prev = final.loc[i - 1, 'price']
-#     price_now = final.loc[i, 'price']
-#     symbol_now = final.loc[i, 'symbol']
-#     symbol_prev = final.loc[i - 1, 'symbol']
-
-#     # PnL diário
-#     pnl = position * (price_now - price_prev)
-#     pnl_cumsum += pnl
-#     final.loc[i, 'pnl'] = pnl
-#     final.loc[i, 'pnl_cumsum'] = pnl_cumsum
-
-#     # Detectar rolagem de contrato
-#     if position != 0 and symbol_now != symbol_prev:
-#         # PnL da rolagem = diferença entre contratos * -posição
-#         pnl_roll = (price_now - price_prev) * (-position)
-#         pnl_cumsum += pnl_roll
-#         final.loc[i, 'pnl'] += pnl_roll  # adiciona ao PnL do dia
-    
-#         # Marca rolagem
-#         final.loc[i, 'rollover'] = True
-    
-#         # Reabre no novo contrato (mesma direção)
-#         entry_price = price_now
-#         max_pnl_since_entry = 0.0
-#         symbol_atual = symbol_now
-
-#     # Se temos posição, verifica stop
-#     if position != 0:
-#         pnl_trade = (price_now - entry_price) * np.sign(position) * abs(position)
-#         max_pnl_since_entry = max(max_pnl_since_entry, pnl_trade)
-
-#         drawdown = (max_pnl_since_entry - pnl_trade) / (max_pnl_since_entry + 1e-9)
-#         if drawdown >= stop_loss_pct:
-#             position = 0
-#             entry_price = np.nan
-#             max_pnl_since_entry = 0.0
-#             final.loc[i, 'stop'] = True
-
-#     # Se não há posição, verifica sinal
-#     if position == 0:
-#         if final.loc[i, 'outlier_type'] == 'min':
-#             position = contracts_per_trade
-#             entry_price = price_now
-#             symbol_atual = symbol_now
-#         elif final.loc[i, 'outlier_type'] == 'max':
-#             position = -contracts_per_trade
-#             entry_price = price_now
-#             symbol_atual = symbol_now
-
-#     # Atualiza registros
-#     final.loc[i, 'position'] = position
-#     final.loc[i, 'entry_price'] = entry_price
-#     final.loc[i, 'max_pnl_since_entry'] = max_pnl_since_entry
-#     final.loc[i, 'notional'] = position * price_now
-#     final.loc[i, 'pnl_cumsum'] = pnl_cumsum
-
-# final.head(20)
-
-#%% Função de trading v2
-
-
-# def backtest(resultado, di, maturity_target=6, contracts_per_trade=10, stop_loss_pct=0.10, trading_tol='252d'):
-#     """
-#     Backtest de trading em DI usando sinais de prêmio.
-    
-#     Parâmetros:
-#     - resultado: DataFrame com sinais (colunas: Date, value, HBOS_score, outlier_type, maturity)
-#     - di: DataFrame com contratos DI (colunas: refdate, symbol, price, vencimento, maturity_days)
-#     - maturity_target: maturidade em meses para filtrar prêmio
-#     - contracts_per_trade: número de contratos por operação
-#     - stop_loss_pct: stop em percentual
-#     - trading_tol: tolerância para mapear refdate do prêmio ao DI
-    
-#     Retorna:
-#     - final: DataFrame pronto para análise/trading
-#     """
-    
-#     # ===== 1. Preparar sinais =====
-#     premio_sinal = resultado[resultado['maturity'] == maturity_target].copy()
-#     premio_sinal['maturity_days'] = premio_sinal['maturity'] * 21
-#     premio_sinal.dropna(subset=['HBOS_score'], inplace=True)
-    
-#     if premio_sinal.empty:
-#         raise ValueError(f"Nenhum sinal encontrado para maturity_target = {maturity_target}. O backtest não pode continuar.")
-    
-#     premio_sinal = premio_sinal.reset_index()
-#     premio_sinal.rename(columns={'Date': 'refdate'}, inplace=True)
-#     premio_sinal['orig_idx'] = premio_sinal.index
-    
-#     # ===== 2. Merge com DI =====
-#     premio_sinal['refdate'] = pd.to_datetime(premio_sinal['refdate'])
-#     di['refdate'] = pd.to_datetime(di['refdate'])
-    
-#     trading_dates = pd.DatetimeIndex(sorted(di['refdate'].unique()))
-#     pos = trading_dates.get_indexer(premio_sinal['refdate'], method='nearest', tolerance=pd.Timedelta(trading_tol))
-#     premio_sinal['refdate_trading'] = pd.to_datetime([trading_dates[i] if i != -1 else pd.NaT for i in pos])
-    
-#     merged = premio_sinal.merge(
-#         di,
-#         left_on='refdate_trading',
-#         right_on='refdate',
-#         how='left',
-#         suffixes=('_premio', '_di')
-#     )
-    
-#     merged['maturity_diff'] = (merged['maturity_days_premio'] - merged['maturity_days_di']).abs()
-    
-#     def pick_min_df(df):
-#         if df['maturity_days_di'].isna().all():
-#             return df.iloc[0]
-#         else:
-#             return df.loc[df['maturity_diff'].idxmin()]
-    
-#     picked = merged.groupby('orig_idx', group_keys=False).apply(pick_min_df).reset_index(drop=True)
-    
-#     picked.rename(columns={'maturity_days_di': 'maturity_days'}, inplace=True)
-    
-#     final_cols = ['refdate_premio', 'value', 'outlier_type', 'maturity', 'maturity_days',
-#                   'symbol', 'price', 'vencimento']
-#     picked.rename(columns={'refdate':'refdate_premio'}, inplace=True)
-#     final = picked[final_cols].copy()
-    
-#     # ===== 3. Backtest =====
-#     final = final.sort_values('refdate_premio').reset_index(drop=True)
-    
-#     # << CORREÇÃO DEFINITIVA AQUI: Preencher preços NaN com o último valor válido >>
-#     final['price'].fillna(method='ffill', inplace=True)
-    
-#     # Inicializar colunas
-#     final['position'] = 0
-#     final['entry_price'] = np.nan
-#     final['max_pnl_since_entry'] = 0.0
-#     final['notional'] = 0.0
-#     final['pnl'] = 0.0
-#     final['pnl_cumsum'] = 0.0
-#     final['stop'] = False
-#     final['rollover'] = False
-#     final['symbol_prev'] = final['symbol'].shift(1)
-    
-#     # Estados internos
-#     position = 0
-#     entry_price = np.nan
-#     pnl_cumsum = 0.0
-#     max_pnl_since_entry = 0.0
-#     symbol_atual = None
-    
-#     for i in range(1, len(final)):
-#         price_prev = final.loc[i - 1, 'price']
-#         price_now = final.loc[i, 'price']
-#         symbol_now = final.loc[i, 'symbol']
-#         symbol_prev = final.loc[i - 1, 'symbol']
-        
-#         pnl = -position * (price_now - price_prev)
-#         pnl_cumsum += pnl
-        
-#         if position != 0 and symbol_now != symbol_prev:
-#             final.loc[i, 'rollover'] = True
-#             entry_price = price_now
-#             max_pnl_since_entry = 0.0
-#             symbol_atual = symbol_now
-            
-#         if position != 0:
-#             pnl_trade = -position * (price_now - entry_price)
-#             max_pnl_since_entry = max(max_pnl_since_entry, pnl_trade)
-            
-#             if max_pnl_since_entry > 0:
-#                 drawdown = (max_pnl_since_entry - pnl_trade) / max_pnl_since_entry
-#                 if drawdown >= stop_loss_pct:
-#                     position = 0
-#                     entry_price = np.nan
-#                     max_pnl_since_entry = 0.0
-#                     final.loc[i, 'stop'] = True
-        
-#         if position == 0 and not final.loc[i, 'stop']:
-#             if final.loc[i, 'outlier_type'] == 'min':
-#                 position = contracts_per_trade
-#                 entry_price = price_now
-#                 symbol_atual = symbol_now
-#             elif final.loc[i, 'outlier_type'] == 'max':
-#                 position = -contracts_per_trade
-#                 entry_price = price_now
-#                 symbol_atual = symbol_now
-        
-#         final.loc[i, 'position'] = position
-#         final.loc[i, 'entry_price'] = entry_price
-#         final.loc[i, 'max_pnl_since_entry'] = max_pnl_since_entry
-#         final.loc[i, 'notional'] = position * price_now
-#         final.loc[i, 'pnl'] = pnl
-#         final.loc[i, 'pnl_cumsum'] = pnl_cumsum
-    
-#     return final
-
-# df_backtest = backtest(
-#     resultado=resultado,  # Use seu DataFrame 'resultado' aqui
-#     di=di,                # Use seu DataFrame 'di' aqui
-#     maturity_target=6,
-#     contracts_per_trade=10,
-#     stop_loss_pct=0.10,
-#     trading_tol='5d' # Reduzindo a tolerância para o exemplo
-# )
-
-#%% BACKTEST 3
-
-# """
-# Backtest para o DI:
-# - Compra contrato no sinal Min
-# - Vende contrato no sinal Max
-# - Stop em drawdwown de 5%    
-# - Considerar rolagem dos contratos
-# """
-
-# "Filtros Iniciais - iniciar com vertice de 6 meses"
-# sinal = hbos[hbos['maturity'] == 6]
-# sinal['maturity_days'] = 6 * 21
-
-# "MERGE DI + SINAL DE TRADING"
-
-# def join_sinal_di_nearest_maturity(sinal: pd.DataFrame, di: pd.DataFrame) -> pd.DataFrame:
-#     """
-#     Une `sinal` e `di` por data escolhendo, para cada Date de `sinal`, o contrato de `di`
-#     na mesma `refdate` cuja `maturity_days` é a mais próxima (diferença absoluta mínima)
-#     da `maturity_days` do `sinal`.
-
-#     Parâmetros
-#     ----------
-#     sinal : pd.DataFrame
-#         DataFrame indexado por 'Date' (DatetimeIndex) contendo, no mínimo, a coluna 'maturity_days'.
-#     di : pd.DataFrame
-#         DataFrame contendo, no mínimo, as colunas 'refdate' (datas) e 'maturity_days'.
-
-#     Retorno
-#     -------
-#     pd.DataFrame
-#         DataFrame indexado por 'Date' com todas as colunas originais de `sinal` e as colunas do
-#         contrato selecionado de `di`. Colunas com mesmo nome entre `sinal` e `di` são
-#         desambiguadas com sufixo `_di` no lado de `di`.
-#     """
-#     # Cópias para não alterar os objetos originais
-#     s = sinal.reset_index().copy()
-#     d = di.copy()
-
-#     # Normalização dos tipos de data (remove horário e garante datetime)
-#     s['Date'] = pd.to_datetime(s['Date']).dt.normalize()
-#     d['refdate'] = pd.to_datetime(d['refdate']).dt.normalize()
-
-#     # Junção por data (cada Date de s com todos os contratos de d na mesma refdate)
-#     merged = s.merge(
-#         d,
-#         left_on='Date',
-#         right_on='refdate',
-#         how='left',
-#         suffixes=('', '_di')
-#     )
-
-#     # Diferença absoluta em dias de maturidade (sinal vs di)
-#     # Observação: após o merge, a 'maturity_days' de `di` vira 'maturity_days_di'
-#     merged['abs_diff_maturity'] = (merged['maturity_days'] - merged['maturity_days_di']).abs()
-
-#     # Para datas sem match em `di`, o merge gera linha(s) com NaN; usar +inf para idxmin selecionar essa linha
-#     merged['abs_diff_maturity_filled'] = merged['abs_diff_maturity'].fillna(np.inf)
-
-#     # Seleciona, para cada Date, a linha com menor diferença (se houver empate, pega a primeira)
-#     best_idx = merged.groupby('Date', sort=False)['abs_diff_maturity_filled'].idxmin()
-#     out = merged.loc[best_idx].copy()
-
-#     # Limpeza de colunas auxiliares
-#     out.drop(columns=['abs_diff_maturity', 'abs_diff_maturity_filled'], inplace=True)
-
-#     # Define índice como 'Date'
-#     out.set_index('Date', inplace=True)
-
-#     return out
-
-# trading = join_sinal_di_nearest_maturity(sinal, di)
-
-
-# "DINAMICA DE TRADING: Compra e vende, rolagem e stop"
-
-# # Considera o contrato de rolagem
-# def add_previous_contract_columns(trading: pd.DataFrame, di: pd.DataFrame) -> pd.DataFrame:
-#     """
-#     Adiciona ao DataFrame `trading`:
-#       - 'previous_symbol': contrato antigo (imediatamente anterior) quando há troca;
-#       - 'previous_price_on_dt': preço do contrato antigo na mesma data (refdate == Date) da troca;
-#       - 'rolagem': True quando ambas as colunas acima estão preenchidas (não-NaN), False caso contrário.
-
-#     Pré-requisitos:
-#       * `trading` indexado por 'Date' (DatetimeIndex) e contendo: ['refdate','symbol','price'].
-#       * `di` contendo: ['refdate','symbol','price'].
-#     """
-#     tr = trading.copy().sort_index()
-#     tr['refdate'] = pd.to_datetime(tr['refdate']).dt.normalize()
-
-#     d = di.copy()
-#     d['refdate'] = pd.to_datetime(d['refdate']).dt.normalize()
-
-#     # Detecta a troca de contrato comparando com a linha anterior
-#     tr['previous_symbol'] = tr['symbol'].shift(1)
-
-#     # previous_symbol apenas quando houve troca; demais ficam NaN
-#     tr.loc[tr['symbol'] == tr['previous_symbol'], 'previous_symbol'] = pd.NA
-
-#     # Busca o preço do contrato anterior na mesma refdate da troca
-#     tmp = tr.reset_index()[['Date', 'refdate', 'previous_symbol']].rename(columns={'previous_symbol': 'symbol'})
-#     tmp = tmp[~tmp['symbol'].isna()].copy()
-
-#     prev_prices = tmp.merge(
-#         d[['refdate', 'symbol', 'price']],
-#         on=['refdate', 'symbol'],
-#         how='left'
-#     ).rename(columns={'price': 'previous_price_on_dt'})
-
-#     # Junta o preço anterior de volta ao trading
-#     tr = tr.reset_index().merge(
-#         prev_prices[['Date', 'symbol', 'previous_price_on_dt']].rename(columns={'symbol': 'previous_symbol'}),
-#         on=['Date', 'previous_symbol'],
-#         how='left'
-#     ).set_index('Date')
-
-#     # Coluna de rolagem: True se ambas as novas colunas estiverem preenchidas
-#     tr['rolagem'] = tr['previous_symbol'].notna() & tr['previous_price_on_dt'].notna()
-
-#     return tr
-# trading = add_previous_contract_columns(trading, di)
-
-# # Ajuste financeiro, considerando rolagem
-# trading['ajuste_financeiro'] = np.where(
-#     trading['rolagem'],
-#     trading['previous_price_on_dt'] - trading['price'].shift(1),
-#     trading['price'] - trading['price'].shift(1)
-# )
-
-
-# def build_trading_metrics(
-#     trading: pd.DataFrame,
-#     n_contratos: int = 1,
-#     stop_pct: float = 0.10,
-#     notional_contrato: float = 100_000.0,
-#     valor_corretagem: float = 20.0
-# ) -> pd.DataFrame:
-#     """
-#     Estratégia de trading com:
-#       - Stop fixo (% do notional total)
-#       - Contagem de trades (entrada, virada, rolagem, stop)
-#       - Custos de corretagem (só cobra rolagem se estiver posicionado)
-#       - PnL acumulado ajustado (pnl_acum_aju)
-#     """
-#     df = trading.copy().sort_index()
-
-#     # Sanitização
-#     df['price'] = pd.to_numeric(df['price'], errors='coerce')
-#     df['ajuste_financeiro'] = pd.to_numeric(df['ajuste_financeiro'], errors='coerce').fillna(0.0)
-
-#     # Inicialização
-#     posicao, notional, pnl_list = [], [], []
-#     pnl_acum_book_list, pnl_acum_trade_list = [], []
-#     stop_valor_list, stop_flag_list = [], []
-#     trade_id_list, corretagem_list, pnl_acum_aju_list = [], [], []
-
-#     pos = 0
-#     pnl_acum_book = 0.0
-#     pnl_acum_trade = 0.0
-#     trade_counter = 0
-#     corretagem_total = 0.0
-#     size = int(abs(n_contratos))
-
-#     for dt, row in df.iterrows():
-#         price = row['price']
-#         ajuste = row['ajuste_financeiro']
-#         signal = row.get('outlier_type', None)
-#         rolagem_flag = bool(row.get('rolagem', False))
-
-#         # PnL diário
-#         if pos > 0:
-#             pnl_dia = -ajuste * abs(pos)
-#         elif pos < 0:
-#             pnl_dia =  ajuste * abs(pos)
-#         else:
-#             pnl_dia = 0.0
-
-#         pnl_acum_book += pnl_dia
-
-#         # Atualiza PnL acumulado do trade
-#         if pos != 0:
-#             pnl_acum_trade += pnl_dia
-#         else:
-#             pnl_acum_trade = np.nan
-
-#         # Stop fixo
-#         if pos != 0:
-#             stop_valor = stop_pct * notional_contrato * abs(pos)
-#             stop_atingido = pnl_acum_trade <= -stop_valor
-#         else:
-#             stop_valor = np.nan
-#             stop_atingido = False
-
-#         next_pos = pos
-#         stop_flag_today = False
-#         trade_today = False
-#         corretagem_dia = 0.0
-
-#         # STOP
-#         if stop_atingido:
-#             next_pos = 0
-#             stop_flag_today = True
-#             trade_counter += 1
-#             trade_today = True
-#             corretagem_dia += valor_corretagem * abs(pos)
-
-#         # Sinais
-#         desired_pos = None
-#         if signal == 'min':
-#             desired_pos = +size
-#         elif signal == 'max':
-#             desired_pos = -size
-
-#         if desired_pos is not None:
-#             if pos == 0 and next_pos == 0:
-#                 next_pos = desired_pos
-#                 trade_counter += 1
-#                 trade_today = True
-#                 corretagem_dia += valor_corretagem * abs(desired_pos)
-#             elif pos != 0 and np.sign(desired_pos) != np.sign(pos):
-#                 next_pos = desired_pos
-#                 trade_counter += 1
-#                 trade_today = True
-#                 corretagem_dia += valor_corretagem * abs(desired_pos)
-
-#         # Rolagem (só se estiver posicionado)
-#         if rolagem_flag and pos != 0:
-#             trade_counter += 2
-#             trade_today = True
-#             corretagem_dia += 2 * valor_corretagem * abs(size)
-
-#         # Atualiza corretagem total
-#         corretagem_total += corretagem_dia
-
-#         # Registra resultados
-#         posicao.append(pos)
-#         notional.append(price * pos if pd.notna(price) else np.nan)
-#         pnl_list.append(pnl_dia)
-#         pnl_acum_book_list.append(pnl_acum_book)
-#         pnl_acum_trade_list.append(pnl_acum_trade)
-#         stop_valor_list.append(stop_valor)
-#         stop_flag_list.append(bool(stop_flag_today))
-#         trade_id_list.append(trade_counter)
-#         corretagem_list.append(corretagem_dia)
-#         pnl_acum_aju_list.append(pnl_acum_book - corretagem_total)
-
-#         # Avança posição
-#         prev_pos = pos
-#         pos = next_pos
-
-#         # Novo trade → reseta pnl acumulado do trade
-#         if (prev_pos == 0 and pos != 0) or (prev_pos != 0 and pos != 0 and np.sign(prev_pos) != np.sign(pos)):
-#             pnl_acum_trade = 0.0
-
-#     # Adiciona colunas finais
-#     df['posicao'] = posicao
-#     df['notional'] = notional
-#     df['pnl'] = pnl_list
-#     df['pnl_acumulado'] = pnl_acum_book_list
-#     df['pnl_acumulado_trade'] = pnl_acum_trade_list
-#     df['stop_valor'] = stop_valor_list
-#     df['stop_flag'] = stop_flag_list
-#     df['trade_id'] = trade_id_list
-#     df['corretagem'] = corretagem_list
-#     df['pnl_acum_aju'] = pnl_acum_aju_list
-
-#     # Seleciona colunas desejadas
-#     cols_final = [
-#         'refdate', 'value', 'is_outlier', 'outlier_type',
-#         'maturity', 'maturity_days', 'maturity_code',
-#         'symbol', 'price', 'maturity_days_di', 'previous_symbol',
-#         'previous_price_on_dt', 'rolagem', 'ajuste_financeiro', 'posicao',
-#         'notional', 'pnl', 'pnl_acumulado', 'pnl_acumulado_trade',
-#         'stop_valor', 'stop_flag', 'trade_id', 'corretagem', 'pnl_acum_aju'
-#     ]
-
-#     return df[[c for c in cols_final if c in df.columns]]
-
-
-# trading_metric = build_trading_metrics(
-#     trading,
-#     n_contratos=2,
-#     stop_pct=0.05,
-#     valor_corretagem=20
-# )
-
-
-#%% Função final
+#%% Função Backtest
 
 def backtest_di(
     hbos: pd.DataFrame,
     di: pd.DataFrame,
+    cdi: pd.DataFrame,
     maturity_target: int = 6,
     n_contratos: int = 1,
     stop_pct: float = 0.05,
     notional_contrato: float = 100_000.0,
     valor_corretagem: float = 20.0
 ) -> pd.DataFrame:
-    """
-    Backtest automatizado para o DI:
-    - Compra no sinal 'min' e vende no sinal 'max'
-    - Stop fixo (% do notional total)
-    - Considera rolagem dos contratos
-    - Aplica custo de corretagem
-    - Retorna métricas de posição e PnL
-
-    Parâmetros
-    ----------
-    hbos : pd.DataFrame
-        DataFrame com colunas ['Date', 'maturity', 'outlier_type', ...].
-    di : pd.DataFrame
-        DataFrame com colunas ['refdate', 'symbol', 'price', 'maturity_days'].
-    maturity_target : int
-        Vértice de maturidade (em meses) a filtrar do HBOS (default=6).
-    n_contratos : int
-        Número de contratos operados.
-    stop_pct : float
-        Percentual de stop-loss sobre o notional total.
-    notional_contrato : float
-        Notional unitário de cada contrato.
-    valor_corretagem : float
-        Custo fixo de corretagem por operação e contrato.
-
-    Retorna
-    -------
-    pd.DataFrame
-        DataFrame final com métricas do trading.
-    """
-    import numpy as np
-    import pandas as pd
 
     # ------------------------------------------------------
     # 1. Filtragem inicial
@@ -1486,6 +866,7 @@ def backtest_di(
         if (prev_pos == 0 and pos != 0) or (prev_pos != 0 and pos != 0 and np.sign(prev_pos) != np.sign(pos)):
             pnl_acum_trade = 0.0
 
+
     # ------------------------------------------------------
     # 6. Colunas finais
     # ------------------------------------------------------
@@ -1500,61 +881,17 @@ def backtest_di(
     df['corretagem'] = corretagem_list
     df['pnl_acum_aju'] = pnl_acum_aju_list
 
-    cols_final = [
-        'refdate', 'value', 'is_outlier', 'outlier_type',
-        'maturity', 'maturity_days', 'maturity_code',
-        'symbol', 'price', 'maturity_days_di', 'previous_symbol',
-        'previous_price_on_dt', 'rolagem', 'ajuste_financeiro', 'posicao',
-        'notional', 'pnl', 'pnl_acumulado', 'pnl_acumulado_trade',
-        'stop_valor', 'stop_flag', 'trade_id', 'corretagem', 'pnl_acum_aju'
-    ]
-
-    return df[[c for c in cols_final if c in df.columns]]
-
-
-
-resultados = {}
-
-for maturity in premia.columns:
-    maturity_int = int(maturity)  # garante que seja inteiro
-    print(f'Rodando backtest para maturidade: {maturity_int} meses...')
-    try:
-        resultado = backtest_di(
-            di=di,
-            hbos=hbos,
-            maturity_target=maturity_int,  # <-- aqui
-            n_contratos=2,
-            stop_pct=0.05,
-            valor_corretagem=20
-        )
-        resultados[maturity_int] = resultado
-    except Exception as e:
-        print(f'Erro na maturidade {maturity_int}: {e}')
-
-print('✅ Todos os backtests concluídos!')
-
-
-#%% Analise e eficiencia
-
-def calcular_cotas(trading_metric, cdi, notional_contrato=100_000):
-    df = trading_metric.copy()
     
-    # Preparar CDI
+    # ------------------------------------------------------
+    # 7. Ajuste do PNL ao CDI: dinamica pré vs pós
+    # ------------------------------------------------------
     cdi = cdi.copy()
+
     cdi['CDI_year'] = cdi['CDI_year'] / 100
     cdi['CDI_daily'] = (1 + cdi['CDI_year']) ** (1/252) - 1
-    if 'Date' in cdi.columns:
-        cdi.rename(columns={'Date':'refdate'}, inplace=True)
-    cdi['refdate'] = pd.to_datetime(cdi['refdate'], dayfirst=True)
-    
-    # Datas da estratégia
-    df['refdate'] = pd.to_datetime(df['refdate'], dayfirst=True)
-    
-    # --- Cota da estratégia ---
-    df['retorno_acumulado'] = df['pnl_acum_aju'] / notional_contrato
-    df['cota_estrategia'] = 1 + df['retorno_acumulado']
-    
-    # --- Merge CDI usando merge_asof ---
+    cdi.rename(columns={'Date':'refdate'}, inplace=True)
+    cdi['refdate'] = pd.to_datetime(cdi['refdate'], dayfirst=True)   
+
     df = pd.merge_asof(
         df.sort_values('refdate'),
         cdi.sort_values('refdate')[['refdate', 'CDI_daily']],
@@ -1569,13 +906,178 @@ def calcular_cotas(trading_metric, cdi, notional_contrato=100_000):
         axis=1
     )
     
-    # --- Cota CDI ---
+    # PnL do CDI
     df['cdi_period'] = (1 + df['CDI_daily']) ** df['dias_uteis_pregao'] - 1
-    df['cota_cdi'] = (1 + df['cdi_period']).cumprod()
+    df['pnl_cdi'] = df['cdi_period'] * df['notional']
+    df['pnl_cdi'] = abs(df['pnl_cdi'])
+    
+    # PnL Final pré vs pós
+    df['pnl_final'] =  df['pnl_cdi'] + df['pnl']
+    df['pnl_final_acum'] = (
+        df['pnl_final']
+        .cumsum()
+    )
+
+
+    cols_final = [
+        'refdate', 'value', 'is_outlier', 'outlier_type',
+        'maturity', 'maturity_days', 'maturity_code',
+        'symbol', 'price', 'maturity_days_di', 'previous_symbol',
+        'previous_price_on_dt', 'rolagem', 'ajuste_financeiro', 'posicao',
+        'notional', 'pnl', 'pnl_acumulado', 'pnl_acumulado_trade',
+        'stop_valor', 'stop_flag', 'trade_id', 'corretagem', 'pnl_acum_aju', 
+        'pnl_cdi', 'pnl_final', 'pnl_final_acum'
+        
+    ]
+
+    return df[[c for c in cols_final if c in df.columns]]
+
+
+
+resultados = {}
+cdi = pd.read_csv(r"\\nas03\gestao_recursos\Pessoais\Bernardo\premia\hist_cdi.csv", sep=';')
+
+
+for maturity in premia.columns:
+    maturity_int = int(maturity)  # garante que seja inteiro
+    print(f'Rodando backtest para maturidade: {maturity_int} meses...')
+    try:
+        resultado = backtest_di(
+            di=di,
+            hbos=hbos,
+            cdi=cdi,
+            maturity_target=maturity_int,  # <-- aqui
+            n_contratos=1,
+            stop_pct=0.05,
+            valor_corretagem=20
+        )
+        resultados[maturity_int] = resultado
+    except Exception as e:
+        print(f'Erro na maturidade {maturity_int}: {e}')
+
+print('✅ Todos os backtests concluídos!')
+
+
+
+# #%% Analise e eficiencia - v0 (com cdi)
+
+# def calcular_cotas(trading_metric, cdi, notional_contrato=100_000):
+#     df = trading_metric.copy()
+    
+#     # Preparar CDI
+#     cdi = cdi.copy()
+#     cdi['CDI_year'] = cdi['CDI_year'] / 100
+#     cdi['CDI_daily'] = (1 + cdi['CDI_year']) ** (1/252) - 1
+#     if 'Date' in cdi.columns:
+#         cdi.rename(columns={'Date':'refdate'}, inplace=True)
+#     cdi['refdate'] = pd.to_datetime(cdi['refdate'], dayfirst=True)
+    
+#     # Datas da estratégia
+#     df['refdate'] = pd.to_datetime(df['refdate'], dayfirst=True)
+       
+#     # --- Merge CDI usando merge_asof ---
+#     df = pd.merge_asof(
+#         df.sort_values('refdate'),
+#         cdi.sort_values('refdate')[['refdate', 'CDI_daily']],
+#         on='refdate'
+#     )
+    
+#     # --- Dias úteis entre pregões ---
+#     df['prev_Date'] = df['refdate'].shift(1)
+#     df['dias_uteis_pregao'] = df.apply(
+#         lambda row: len(pd.bdate_range(start=row['prev_Date'], end=row['refdate'])) - 1 
+#         if pd.notna(row['prev_Date']) else np.nan,
+#         axis=1
+#     )
+    
+#     # --- Cota CDI ---
+#     df['cdi_period'] = (1 + df['CDI_daily']) ** df['dias_uteis_pregao'] - 1
+#     df['cota_cdi'] = (1 + df['cdi_period']).cumprod()
+    
+    
+#     # --- Cota da estratégia ---
+#     df['retorno_acumulado_estrategia'] = df['pnl_final_acum'] / notional_contrato
+#     df['cota_estrategia'] = (1 + df['retorno_acumulado_estrategia'])
+#     #df['cota_estrategia'] = df['cota_cdi'] * (1 + df['retorno_acumulado_estrategia'])
+    
+    
+#     # --- Excesso de retorno ---
+#     df['excesso_retorno'] = df['cota_estrategia'] - df['cota_cdi']
+
+#     df['retorno_semanal'] = df['cota_estrategia'].pct_change()
+
+#     vols = []
+#     for i in range(len(df)):
+#         # pegar todos os retornos válidos até o ponto i (exclui NaN inicial)
+#         serie_passada = df['retorno_semanal'].iloc[1:i+1].dropna()
+
+#         if len(serie_passada) > 1:
+#             vol = serie_passada.std() * np.sqrt(52)
+#         else:
+#             vol = np.nan
+#         vols.append(vol)
+
+#     df['vol'] = vols
+    
+#     df['sharpe'] = df['excesso_retorno'] / df['vol']
+#     return df
+
+
+# # CDI
+# cdi = pd.read_csv(r"\\nas03\gestao_recursos\Pessoais\Bernardo\premia\hist_cdi.csv", sep=';')
+
+
+# # --- Uso da função ---
+# # Aplicar a função calcular_cotas() a todos os DataFrames do dicionário 'resultados'
+# resultados_cotas = {}
+
+# for maturity, df_trading in resultados.items():
+#     print(f'Calculando cotas para maturidade {maturity} meses...')
+#     try:
+#         resultados_cotas[maturity] = calcular_cotas(df_trading, cdi)
+#     except Exception as e:
+#         print(f'❌ Erro ao calcular cotas para maturidade {maturity}: {e}')
+
+# print('✅ Cálculo de cotas concluído para todas as maturidades!')
+
+# # Criar DataFrame resumo com Sharpe e retorno total da estratégia
+# dados_resumo = []
+
+# for maturity, df in resultados_cotas.items():
+#     # garantir que não esteja vazio
+#     if df.empty:
+#         continue
+
+#     # último Sharpe válido
+#     sharpe_final = df['sharpe'].dropna().iloc[-1] if not df['sharpe'].dropna().empty else np.nan
+
+#     # última cota da estratégia
+#     cota_final = df['cota_estrategia'].dropna().iloc[-1] if not df['cota_estrategia'].dropna().empty else np.nan
+
+#     # retorno total = cota_final - 1
+#     retorno_total = cota_final - 1 if pd.notna(cota_final) else np.nan
+
+#     dados_resumo.append({
+#         'maturidade': maturity,
+#         'sharpe_final': sharpe_final,
+#         'retorno_total': retorno_total
+#     })
+
+# # Montar DataFrame final
+# df_resumo = pd.DataFrame(dados_resumo).sort_values('maturidade').reset_index(drop=True)
+
+# print(df_resumo)
+#%% Analise e eficiencia - v1 (sem cdi) --- retornos ja são ex cdi
+
+def calcular_cotas(trading_metric, notional_contrato=100_000):
+ 
+    df = trading_metric.copy()
+     
+    # --- Cota da estratégia ---
+    df['retorno_acumulado_estrategia'] = df['pnl_final_acum'] / notional_contrato
+    df['cota_estrategia'] = (1 + df['retorno_acumulado_estrategia'])
     
     # --- Excesso de retorno ---
-    df['excesso_retorno'] = df['cota_estrategia'] - df['cota_cdi']
-
     df['retorno_semanal'] = df['cota_estrategia'].pct_change()
 
     vols = []
@@ -1591,12 +1093,12 @@ def calcular_cotas(trading_metric, cdi, notional_contrato=100_000):
 
     df['vol'] = vols
     
-    df['sharpe'] = df['excesso_retorno'] / df['vol']
+    df['sharpe'] = df['retorno_acumulado_estrategia'] / df['vol']
     return df
 
 
 # CDI
-cdi = pd.read_csv(r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\data_colection\hist_cdi.csv", sep=';')
+#cdi = pd.read_csv(r"\\nas03\gestao_recursos\Pessoais\Bernardo\premia\hist_cdi.csv", sep=';')
 
 
 # --- Uso da função ---
@@ -1606,7 +1108,7 @@ resultados_cotas = {}
 for maturity, df_trading in resultados.items():
     print(f'Calculando cotas para maturidade {maturity} meses...')
     try:
-        resultados_cotas[maturity] = calcular_cotas(df_trading, cdi)
+        resultados_cotas[maturity] = calcular_cotas(df_trading)
     except Exception as e:
         print(f'❌ Erro ao calcular cotas para maturidade {maturity}: {e}')
 
@@ -1639,6 +1141,120 @@ for maturity, df in resultados_cotas.items():
 df_resumo = pd.DataFrame(dados_resumo).sort_values('maturidade').reset_index(drop=True)
 
 print(df_resumo)
+#%% DF_Cotas
+import pandas as pd
+from typing import Dict
+
+def build_df_cotas(resultados_cotas: Dict) -> pd.DataFrame:
+    """
+    Constrói um único DataFrame 'df_cotas' com:
+      - Uma coluna única 'cota_cdi' (consolidada a partir dos DFs do dict).
+      - Uma coluna 'cota_estrategia_{maturity}' para cada DF (maturity obtido da chave do dict
+        quando numérica; caso contrário, usa a coluna 'maturity' do próprio DF).
+
+    Premissas:
+      - Cada DF contém pelo menos uma coluna de data (idealmente 'refdate') e as colunas
+        'cota_estrategia' e 'cota_cdi'.
+      - Caso algum DF não tenha 'cota_cdi', ele ainda pode contribuir com 'cota_estrategia'.
+      - As datas são alinhadas por índice datetime.
+
+    Regras:
+      - Data é obtida do índice se já for DatetimeIndex; senão, da coluna 'refdate' (ou tenta
+        ['date', 'Date', 'dt', 'data']).
+      - Duplicatas de data são removidas mantendo a última ocorrência.
+      - 'cota_cdi' é consolidado usando combine_first() na ordem de iteração das entradas.
+      - Colunas de estratégia são nomeadas 'cota_estrategia_{maturity}', com maturities ordenados.
+
+    Parâmetros:
+      - resultados_cotas: dict[Any, pd.DataFrame]
+
+    Retorno:
+      - pd.DataFrame com índice datetime e colunas: 'cota_cdi', 'cota_estrategia_{maturity}'...
+    """
+    def _get_date_index(df: pd.DataFrame) -> pd.Series:
+        if isinstance(df.index, pd.DatetimeIndex):
+            return df.index
+        if 'refdate' in df.columns:
+            return pd.to_datetime(df['refdate'], errors='coerce')
+        for cand in ['date', 'Date', 'dt', 'data']:
+            if cand in df.columns:
+                return pd.to_datetime(df[cand], errors='coerce')
+        raise ValueError("Não foi possível determinar a coluna de data (índice datetime ou 'refdate').")
+
+    # Acumuladores
+    cdi_series = None
+    estrategias = {}
+
+    for key, df in resultados_cotas.items():
+        if not isinstance(df, pd.DataFrame):
+            continue
+
+        # Preparar DF (data + ordenação + numérico)
+        dti = _get_date_index(df)
+        dff = df.copy()
+        dff = dff.assign(_dt=dti).dropna(subset=['_dt']).sort_values('_dt')
+        dff = dff.drop_duplicates(subset=['_dt'], keep='last').set_index('_dt')
+
+        # Coerção numérica segura
+        for col in ['cota_cdi', 'cota_estrategia', 'maturity']:
+            if col in dff.columns:
+                dff[col] = pd.to_numeric(dff[col], errors='coerce')
+
+        # Determinar maturity (preferir chave numérica; fallback: coluna 'maturity')
+        maturity = None
+        if isinstance(key, (int, float)) and pd.notna(key):
+            maturity = int(key)
+        elif 'maturity' in dff.columns and dff['maturity'].notna().any():
+            # Usa o valor modal/primeiro válido
+            maturity = int(dff['maturity'].dropna().iloc[0])
+
+        # Capturar cota_estrategia
+        if 'cota_estrategia' in dff.columns and maturity is not None:
+            estrategias[maturity] = dff['cota_estrategia'].copy()
+
+        # Consolidar cota_cdi (uma única coluna)
+        if 'cota_cdi' in dff.columns:
+            cdi_col = dff['cota_cdi'].copy()
+            cdi_series = cdi_col if cdi_series is None else cdi_series.combine_first(cdi_col)
+
+    # Montagem do df_cotas
+    pieces = []
+
+    # CDI primeiro (se existir)
+    if cdi_series is not None:
+        pieces.append(cdi_series.rename('cota_cdi'))
+
+    # Estratégias ordenadas por maturity
+    for m in sorted(estrategias.keys()):
+        pieces.append(estrategias[m].rename(f'cota_estrategia_{m}'))
+
+    if not pieces:
+        # Nada a montar
+        return pd.DataFrame()
+
+    # Alinhamento por índice (outer join em todas as datas)
+    df_cotas = pd.concat(pieces, axis=1).sort_index()
+
+    return df_cotas
+
+df_cotas = build_df_cotas(resultados_cotas)
+
+
+
+### PLOT####
+import matplotlib.pyplot as plt
+plt.figure(figsize=(14, 6))
+for col in df_cotas.columns:
+    plt.plot(df_cotas.index, df_cotas[col], label=col)
+
+plt.title('Cotas CDI e Estratégias')
+plt.xlabel('Data')
+plt.ylabel('Cota')
+plt.legend(ncol=3, fontsize=8)
+plt.grid(alpha=0.3)
+plt.tight_layout()
+plt.show()
+
 
 
 
