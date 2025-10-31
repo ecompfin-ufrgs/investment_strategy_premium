@@ -10,99 +10,64 @@ from pandas.tseries.offsets import BMonthBegin
 import pandas_market_calendars as pmc
 pd.set_option('display.max_columns', None)
 
+#%% DI1 - Import + ajusta
 
-#%% Data analytics
-def plot_data(data):
-    # Ler dados
-    df = pd.read_parquet(data)
-    df['Date'] = pd.to_datetime(df['Date'], dayfirst=True)
-    df['Year'] = df['Date'].dt.year
+# Ajustes no di1
+#### VENCIMENTO e Dus
 
-    # Selecionar primeira curva de cada ano
-    first_curve_each_year = df.groupby('Year').first().reset_index()
-
-    # Todas as maturidades disponíveis
-    maturities = [int(col[1:]) for col in df.columns if col.startswith('M')]
-
-    # --- Gráfico 1: Curvas completas ---
-    plt.figure(figsize=(14,7))
-    cmap = plt.get_cmap('tab20')  # paleta de cores
-    colors = [cmap(i % 20) for i in range(len(first_curve_each_year))]
+def add_vencimento_e_dus(di):
     
-    for i, (_, row) in enumerate(first_curve_each_year.iterrows()):
-        rates = row[[col for col in df.columns if col.startswith('M')]].values
-        plt.plot(maturities, rates, label=str(row['Year']), color=colors[i], linewidth=2)
+    meses_pt = {
+        'JAN': 1, 'FEV': 2, 'MAR': 3, 'ABR': 4, 'MAI': 5, 'JUN': 6,
+        'JUL': 7, 'AGO': 8, 'SET': 9, 'OUT': 10, 'NOV': 11, 'DEZ': 12
+    }
 
-    # Layout
-    plt.title('Interest Rate Curves', fontsize=16)
-    plt.xlabel('Maturity (months)', fontsize=14)
-    plt.ylabel('Rate (%)', fontsize=14)
-    plt.grid(True, linestyle='--', alpha=0.5)
-    plt.xticks(fontsize=12)
-    plt.yticks(fontsize=12)
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=12)
-    plt.tight_layout()
+    meses_b3 = {
+        'F': 1, 'G': 2, 'H': 3, 'J': 4, 'K': 5, 'M': 6,
+        'N': 7, 'Q': 8, 'U': 9, 'V': 10, 'X': 11, 'Z': 12
+    }
     
-    # Salvar gráfico 1
-    output_path1 = r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\graficos\plot_curvas.png"
-    Path(output_path1).parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(output_path1, dpi=300)
-    plt.close()
-    print(f"Gráfico completo salvo em: {output_path1}")
-
-    # --- Gráfico 2: Evolução de maturidades específicas ---
-    selected_maturities = [1, 12, 36, 60, 120]
+    def _venc(row):
+        code = str(row["maturity_code"]).upper().strip()
+        ref = pd.Timestamp(row["refdate"])
+        if code[:3] in meses_pt:
+            mes, ano = meses_pt[code[:3]], int(code[3:])
+        elif code[0] in meses_b3:
+            mes, ano = meses_b3[code[0]], int(code[1:])
+        else:
+            return pd.NaT
+        ano += 2000
+        v = pd.Timestamp(ano, mes, 1) + BMonthBegin()
+        while v < ref:
+            ano += 10
+            v = pd.Timestamp(ano, mes, 1) + BMonthBegin()
+        return v
     
-    plt.figure(figsize=(14,7))
-    for maturity in selected_maturities:
-        col_name = f'M{maturity}'
-        if col_name in df.columns:
-            plt.plot(df['Date'], df[col_name], label=f'{maturity} month' if maturity == 1 else f'{maturity} months', linewidth=2)
+    di["refdate"] = pd.to_datetime(di["refdate"], errors="coerce")
+    di["vencimento"] = di.apply(_venc, axis=1).astype("datetime64[ns]")
     
-    # Layout
-    plt.title('Interest Rate Evolution for Selected Maturities', fontsize=16)
-    plt.xlabel('Date', fontsize=14)
-    plt.ylabel('Rate (%)', fontsize=14)
-    plt.grid(True, linestyle='--', alpha=0.5)
-    plt.xticks(fontsize=12)
-    plt.yticks(fontsize=12)
-    plt.legend(fontsize=12)
-    plt.tight_layout()
+    cal = pmc.get_calendar("B3")
+    start = pd.to_datetime(pd.concat([di["refdate"], di["vencimento"]]).min()).normalize() - pd.Timedelta(days=5)
+    end   = pd.to_datetime(pd.concat([di["refdate"], di["vencimento"]]).max()).normalize() + pd.Timedelta(days=5)
+    sch = cal.schedule(start_date=start, end_date=end)
     
-    # Salvar gráfico 2
-    output_path2 = r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\graficos\plot_vertices.png"
-    plt.savefig(output_path2, dpi=300)
-    plt.close()
-    print(f"Gráfico de maturidades selecionadas salvo em: {output_path2}")
-
-    return df
-
-def descriptive_stats(df, maturities=None):
-    if maturities is None:
-        maturities = [col for col in df.columns if col.startswith('M')]
-    else:
-        maturities = [f'M{m}' if isinstance(m, int) else m for m in maturities]
-
-    stats_list = []
-    for col in maturities:
-        rates = df[col]
-        stats_list.append({
-            'Maturity (Months)': int(col[1:]),  # 'M1' = 1 mês
-            'Mean': round(rates.mean(), 2),
-            'Std': round(rates.std(), 2),
-            'Min': round(rates.min(), 2),
-            'Max': round(rates.max(), 2),
-            '25%': round(rates.quantile(0.25), 2),
-            '50%': round(rates.median(), 2),
-            '75%': round(rates.quantile(0.75), 2)
-        })
-
-    stats_df = pd.DataFrame(stats_list)
-    stats_df = stats_df.sort_values('Maturity (Months)').reset_index(drop=True)
-    return stats_df
+    trading = pd.DatetimeIndex(sch.index).tz_localize(None).normalize().unique().sort_values()
+    t_np = trading.values.astype("datetime64[D]")
+    
+    r = di["refdate"].dt.normalize().values.astype("datetime64[D]")
+    v = di["vencimento"].dt.normalize().values.astype("datetime64[D]")
+    mask = ~pd.isna(r) & ~pd.isna(v)
+    out = np.full(len(di), np.nan, dtype="float")
+    if mask.any():
+        ir = np.searchsorted(t_np, r[mask], side="right")
+        iv = np.searchsorted(t_np, v[mask], side="right")
+        out[mask] = (iv - ir).astype(float)
+    
+    di["maturity_days"] = pd.Series(out, index=di.index).astype("Int64")
+    return di
 
 #%% ACM
-def run_acm(data):
+def run_acm(data, di):
     
     # Read data
     df = pd.read_parquet(data)
@@ -129,25 +94,14 @@ def run_acm(data):
     colunas_int = [int(c) for c in tp_df.columns]
     semesters = [c for c in colunas_int if c % 6 == 0]
     tp_df = tp_df[semesters]
+    
+    # filtra dados para obter semanais
+    tp_df.reset_index(inplace=True)
+    tp_df = tp_df[tp_df['Date'].isin(di['refdate'])]
+    tp_df["Date"] = pd.to_datetime(tp_df["Date"])
+    tp_df = tp_df.set_index("Date")
 
     return acm, tp_df
-
-
-#%% Run Functions - Plots, Stats and Run ACM
-#Data
-#df_curves = r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\data_colection\curvas_b3.parquet"
-df_curves = r"\\nas03\gestao_recursos\Pessoais\Bernardo\premia\curvas_b3.parquet"
-
-
-# Plot
-#df = plot_data(df_curves)
-
-# Stats 
-#stats_df = descriptive_stats(df, [1, 12, 36, 60, 120])
-
-# Model ACM
-acm, premia = run_acm(df_curves)
-
 
 #%% Normality test - Gauss
 
@@ -183,7 +137,45 @@ def normality_test_cumulative_data(df):
 
     return pd.DataFrame(results)
 
-cumulative_normality = normality_test_cumulative_data(premia)
+def normality_test_full(df):
+    """
+    Aplica o teste de Jarque-Bera em cada série completa (não cumulativa) 
+    de maturidade e retorna um DataFrame com os resultados.
+    
+    Parâmetros:
+    -----------
+    df : pd.DataFrame
+        DataFrame contendo as séries por maturidade.
+    alpha : float
+        Nível de significância para rejeição da normalidade.
+    
+    Retorna:
+    --------
+    pd.DataFrame com colunas:
+        ['maturity', 'JB_stat', 'p-value', 'interpretation']
+    """
+    alpha=0.05
+    results = []
+    
+    for column_name in df.columns:
+        serie = df[column_name].dropna()
+
+        if len(serie) < 30:  # exigir pelo menos 30 observações
+            jb_stat, p_val, interpretation = np.nan, np.nan, 'Não aplicável'
+        elif serie.std() == 0:  # variância zero
+            jb_stat, p_val, interpretation = np.nan, np.nan, 'Não aplicável'
+        else:
+            jb_stat, p_val = jarque_bera(serie)
+            interpretation = 'NORMAL' if p_val > alpha else 'NON_NORMAL'
+
+        results.append({
+            'maturity': column_name,
+            'JB_stat': jb_stat,
+            'p-value': p_val,
+            'interpretation': interpretation
+        })
+
+    return pd.DataFrame(results)
 
 
 def plot_normality_frequency_percent():
@@ -242,7 +234,6 @@ def plot_normality_frequency_percent():
     plt.tight_layout()
     plt.show()
     
-plot_normality_frequency_percent()
 #%% - Stationary test ADF
 
 # Teste de estacionariedade ADF (não cumulativo) para TODO o DataFrame 'premia'
@@ -370,89 +361,6 @@ def adf_test_full_all(
         out = out.sort_values("maturity").reset_index(drop=True)
 
     return out
-
-
-# Exemplo de uso (mantendo nomes originais; sem criar variáveis auxiliares globais):
-adf_full_all = adf_test_full_all(
-    premia,
-    alpha=0.05,
-    regression="c",
-    autolag="AIC"
-)
-
-
-
-#%% DI1
-
-di = pd.read_parquet(r"\\nas03\gestao_recursos\Pessoais\Bernardo\premia\data_di1.parquet")
-#di = pd.read_parquet(r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\data_colection\data_di1.parquet")
-
-di.drop(columns={'price_previous', 'change', 'settlement_value'}, inplace=True)
-
-# Ajustes no di1
-#### VENCIMENTO e Dus
-
-def add_vencimento_e_dus(di):
-    
-    meses_pt = {
-        'JAN': 1, 'FEV': 2, 'MAR': 3, 'ABR': 4, 'MAI': 5, 'JUN': 6,
-        'JUL': 7, 'AGO': 8, 'SET': 9, 'OUT': 10, 'NOV': 11, 'DEZ': 12
-    }
-
-    meses_b3 = {
-        'F': 1, 'G': 2, 'H': 3, 'J': 4, 'K': 5, 'M': 6,
-        'N': 7, 'Q': 8, 'U': 9, 'V': 10, 'X': 11, 'Z': 12
-    }
-    
-    def _venc(row):
-        code = str(row["maturity_code"]).upper().strip()
-        ref = pd.Timestamp(row["refdate"])
-        if code[:3] in meses_pt:
-            mes, ano = meses_pt[code[:3]], int(code[3:])
-        elif code[0] in meses_b3:
-            mes, ano = meses_b3[code[0]], int(code[1:])
-        else:
-            return pd.NaT
-        ano += 2000
-        v = pd.Timestamp(ano, mes, 1) + BMonthBegin()
-        while v < ref:
-            ano += 10
-            v = pd.Timestamp(ano, mes, 1) + BMonthBegin()
-        return v
-    
-    di["refdate"] = pd.to_datetime(di["refdate"], errors="coerce")
-    di["vencimento"] = di.apply(_venc, axis=1).astype("datetime64[ns]")
-    
-    cal = pmc.get_calendar("B3")
-    start = pd.to_datetime(pd.concat([di["refdate"], di["vencimento"]]).min()).normalize() - pd.Timedelta(days=5)
-    end   = pd.to_datetime(pd.concat([di["refdate"], di["vencimento"]]).max()).normalize() + pd.Timedelta(days=5)
-    sch = cal.schedule(start_date=start, end_date=end)
-    
-    trading = pd.DatetimeIndex(sch.index).tz_localize(None).normalize().unique().sort_values()
-    t_np = trading.values.astype("datetime64[D]")
-    
-    r = di["refdate"].dt.normalize().values.astype("datetime64[D]")
-    v = di["vencimento"].dt.normalize().values.astype("datetime64[D]")
-    mask = ~pd.isna(r) & ~pd.isna(v)
-    out = np.full(len(di), np.nan, dtype="float")
-    if mask.any():
-        ir = np.searchsorted(t_np, r[mask], side="right")
-        iv = np.searchsorted(t_np, v[mask], side="right")
-        out[mask] = (iv - ir).astype(float)
-    
-    di["maturity_days"] = pd.Series(out, index=di.index).astype("Int64")
-    return di
-
-di = add_vencimento_e_dus(di)
-
-
-####### !!!!!!!!!!!!!
-"""FILTRO DI (SEMANAL) > PREMIO"""
-premia.reset_index(inplace=True)
-premia = premia[premia['Date'].isin(di['refdate'])]
-premia["Date"] = pd.to_datetime(premia["Date"])
-premia = premia.set_index("Date")
-
 
 
 #%% HBOS
@@ -678,16 +586,16 @@ def hbos_rolling(
     return res
 
 
-# Exemplo de chamada para todas as colunas com janela n=126 (21*6)
-hbos = hbos_rolling(
-    df=premia,
-    n=(52),           # tamanho da janela
-    bins=20,
-    binning="quantile",
-    q=0.95,
-    epsilon=1e-6,
-    col_label=None   # None = processa todas as colunas
-)
+# # Exemplo de chamada para todas as colunas com janela n=126 (21*6)
+# hbos = hbos_rolling(
+#     df=premia,
+#     n=(39),           # tamanho da janela
+#     bins=20,
+#     binning="quantile",
+#     q=0.95,
+#     epsilon=1e-6,
+#     col_label=None   # None = processa todas as colunas
+# )
 
 #%% Função Backtest
 
@@ -908,15 +816,16 @@ def backtest_di(
     
     # PnL do CDI
     df['cdi_period'] = (1 + df['CDI_daily']) ** df['dias_uteis_pregao'] - 1
-    df['pnl_cdi'] = df['cdi_period'] * df['notional']
-    df['pnl_cdi'] = abs(df['pnl_cdi'])
-    
+    df['pnl_cdi'] = df['cdi_period'] * abs(df['notional'])
+        
     # PnL Final pré vs pós
-    df['pnl_final'] =  df['pnl_cdi'] + df['pnl']
-    df['pnl_final_acum'] = (
-        df['pnl_final']
-        .cumsum()
+    df['pnl_final'] = np.where(
+    df['posicao'] > 0,
+    df['pnl'] + df['pnl_cdi'],
+    df['pnl'] - df['pnl_cdi']
     )
+
+    df['pnl_final_acum'] = (df['pnl_final'].cumsum())
 
 
     cols_final = [
@@ -933,140 +842,27 @@ def backtest_di(
     return df[[c for c in cols_final if c in df.columns]]
 
 
+# resultados = {}
 
-resultados = {}
-cdi = pd.read_csv(r"\\nas03\gestao_recursos\Pessoais\Bernardo\premia\hist_cdi.csv", sep=';')
-
-
-for maturity in premia.columns:
-    maturity_int = int(maturity)  # garante que seja inteiro
-    print(f'Rodando backtest para maturidade: {maturity_int} meses...')
-    try:
-        resultado = backtest_di(
-            di=di,
-            hbos=hbos,
-            cdi=cdi,
-            maturity_target=maturity_int,  # <-- aqui
-            n_contratos=1,
-            stop_pct=0.05,
-            valor_corretagem=20
-        )
-        resultados[maturity_int] = resultado
-    except Exception as e:
-        print(f'Erro na maturidade {maturity_int}: {e}')
-
-print('✅ Todos os backtests concluídos!')
-
-
-
-# #%% Analise e eficiencia - v0 (com cdi)
-
-# def calcular_cotas(trading_metric, cdi, notional_contrato=100_000):
-#     df = trading_metric.copy()
-    
-#     # Preparar CDI
-#     cdi = cdi.copy()
-#     cdi['CDI_year'] = cdi['CDI_year'] / 100
-#     cdi['CDI_daily'] = (1 + cdi['CDI_year']) ** (1/252) - 1
-#     if 'Date' in cdi.columns:
-#         cdi.rename(columns={'Date':'refdate'}, inplace=True)
-#     cdi['refdate'] = pd.to_datetime(cdi['refdate'], dayfirst=True)
-    
-#     # Datas da estratégia
-#     df['refdate'] = pd.to_datetime(df['refdate'], dayfirst=True)
-       
-#     # --- Merge CDI usando merge_asof ---
-#     df = pd.merge_asof(
-#         df.sort_values('refdate'),
-#         cdi.sort_values('refdate')[['refdate', 'CDI_daily']],
-#         on='refdate'
-#     )
-    
-#     # --- Dias úteis entre pregões ---
-#     df['prev_Date'] = df['refdate'].shift(1)
-#     df['dias_uteis_pregao'] = df.apply(
-#         lambda row: len(pd.bdate_range(start=row['prev_Date'], end=row['refdate'])) - 1 
-#         if pd.notna(row['prev_Date']) else np.nan,
-#         axis=1
-#     )
-    
-#     # --- Cota CDI ---
-#     df['cdi_period'] = (1 + df['CDI_daily']) ** df['dias_uteis_pregao'] - 1
-#     df['cota_cdi'] = (1 + df['cdi_period']).cumprod()
-    
-    
-#     # --- Cota da estratégia ---
-#     df['retorno_acumulado_estrategia'] = df['pnl_final_acum'] / notional_contrato
-#     df['cota_estrategia'] = (1 + df['retorno_acumulado_estrategia'])
-#     #df['cota_estrategia'] = df['cota_cdi'] * (1 + df['retorno_acumulado_estrategia'])
-    
-    
-#     # --- Excesso de retorno ---
-#     df['excesso_retorno'] = df['cota_estrategia'] - df['cota_cdi']
-
-#     df['retorno_semanal'] = df['cota_estrategia'].pct_change()
-
-#     vols = []
-#     for i in range(len(df)):
-#         # pegar todos os retornos válidos até o ponto i (exclui NaN inicial)
-#         serie_passada = df['retorno_semanal'].iloc[1:i+1].dropna()
-
-#         if len(serie_passada) > 1:
-#             vol = serie_passada.std() * np.sqrt(52)
-#         else:
-#             vol = np.nan
-#         vols.append(vol)
-
-#     df['vol'] = vols
-    
-#     df['sharpe'] = df['excesso_retorno'] / df['vol']
-#     return df
-
-
-# # CDI
-# cdi = pd.read_csv(r"\\nas03\gestao_recursos\Pessoais\Bernardo\premia\hist_cdi.csv", sep=';')
-
-
-# # --- Uso da função ---
-# # Aplicar a função calcular_cotas() a todos os DataFrames do dicionário 'resultados'
-# resultados_cotas = {}
-
-# for maturity, df_trading in resultados.items():
-#     print(f'Calculando cotas para maturidade {maturity} meses...')
+# for maturity in premia.columns:
+#     maturity_int = int(maturity)  # garante que seja inteiro
+#     print(f'Rodando backtest para maturidade: {maturity_int} meses...')
 #     try:
-#         resultados_cotas[maturity] = calcular_cotas(df_trading, cdi)
+#         resultado = backtest_di(
+#             di=di,
+#             hbos=hbos,
+#             cdi=cdi,
+#             maturity_target=maturity_int,  # <-- aqui
+#             n_contratos=1,
+#             stop_pct=0.05,
+#             valor_corretagem=20
+#         )
+#         resultados[maturity_int] = resultado
 #     except Exception as e:
-#         print(f'❌ Erro ao calcular cotas para maturidade {maturity}: {e}')
+#         print(f'Erro na maturidade {maturity_int}: {e}')
 
-# print('✅ Cálculo de cotas concluído para todas as maturidades!')
+# print('✅ Todos os backtests concluídos!')
 
-# # Criar DataFrame resumo com Sharpe e retorno total da estratégia
-# dados_resumo = []
-
-# for maturity, df in resultados_cotas.items():
-#     # garantir que não esteja vazio
-#     if df.empty:
-#         continue
-
-#     # último Sharpe válido
-#     sharpe_final = df['sharpe'].dropna().iloc[-1] if not df['sharpe'].dropna().empty else np.nan
-
-#     # última cota da estratégia
-#     cota_final = df['cota_estrategia'].dropna().iloc[-1] if not df['cota_estrategia'].dropna().empty else np.nan
-
-#     # retorno total = cota_final - 1
-#     retorno_total = cota_final - 1 if pd.notna(cota_final) else np.nan
-
-#     dados_resumo.append({
-#         'maturidade': maturity,
-#         'sharpe_final': sharpe_final,
-#         'retorno_total': retorno_total
-#     })
-
-# # Montar DataFrame final
-# df_resumo = pd.DataFrame(dados_resumo).sort_values('maturidade').reset_index(drop=True)
-
-# print(df_resumo)
 #%% Analise e eficiencia - v1 (sem cdi) --- retornos ja são ex cdi
 
 def calcular_cotas(trading_metric, notional_contrato=100_000):
@@ -1103,44 +899,44 @@ def calcular_cotas(trading_metric, notional_contrato=100_000):
 
 # --- Uso da função ---
 # Aplicar a função calcular_cotas() a todos os DataFrames do dicionário 'resultados'
-resultados_cotas = {}
+# resultados_cotas = {}
 
-for maturity, df_trading in resultados.items():
-    print(f'Calculando cotas para maturidade {maturity} meses...')
-    try:
-        resultados_cotas[maturity] = calcular_cotas(df_trading)
-    except Exception as e:
-        print(f'❌ Erro ao calcular cotas para maturidade {maturity}: {e}')
+# for maturity, df_trading in resultados.items():
+#     print(f'Calculando cotas para maturidade {maturity} meses...')
+#     try:
+#         resultados_cotas[maturity] = calcular_cotas(df_trading)
+#     except Exception as e:
+#         print(f'❌ Erro ao calcular cotas para maturidade {maturity}: {e}')
 
-print('✅ Cálculo de cotas concluído para todas as maturidades!')
+# print('✅ Cálculo de cotas concluído para todas as maturidades!')
 
-# Criar DataFrame resumo com Sharpe e retorno total da estratégia
-dados_resumo = []
+# # Criar DataFrame resumo com Sharpe e retorno total da estratégia
+# dados_resumo = []
 
-for maturity, df in resultados_cotas.items():
-    # garantir que não esteja vazio
-    if df.empty:
-        continue
+# for maturity, df in resultados_cotas.items():
+#     # garantir que não esteja vazio
+#     if df.empty:
+#         continue
 
-    # último Sharpe válido
-    sharpe_final = df['sharpe'].dropna().iloc[-1] if not df['sharpe'].dropna().empty else np.nan
+#     # último Sharpe válido
+#     sharpe_final = df['sharpe'].dropna().iloc[-1] if not df['sharpe'].dropna().empty else np.nan
 
-    # última cota da estratégia
-    cota_final = df['cota_estrategia'].dropna().iloc[-1] if not df['cota_estrategia'].dropna().empty else np.nan
+#     # última cota da estratégia
+#     cota_final = df['cota_estrategia'].dropna().iloc[-1] if not df['cota_estrategia'].dropna().empty else np.nan
 
-    # retorno total = cota_final - 1
-    retorno_total = cota_final - 1 if pd.notna(cota_final) else np.nan
+#     # retorno total = cota_final - 1
+#     retorno_total = cota_final - 1 if pd.notna(cota_final) else np.nan
 
-    dados_resumo.append({
-        'maturidade': maturity,
-        'sharpe_final': sharpe_final,
-        'retorno_total': retorno_total
-    })
+#     dados_resumo.append({
+#         'maturidade': maturity,
+#         'sharpe_final': sharpe_final,
+#         'retorno_total': retorno_total
+#     })
 
-# Montar DataFrame final
-df_resumo = pd.DataFrame(dados_resumo).sort_values('maturidade').reset_index(drop=True)
+# # Montar DataFrame final
+# df_resumo = pd.DataFrame(dados_resumo).sort_values('maturidade').reset_index(drop=True)
 
-print(df_resumo)
+# print(df_resumo)
 #%% DF_Cotas
 import pandas as pd
 from typing import Dict
@@ -1237,67 +1033,70 @@ def build_df_cotas(resultados_cotas: Dict) -> pd.DataFrame:
 
     return df_cotas
 
-df_cotas = build_df_cotas(resultados_cotas)
+# df_cotas = build_df_cotas(resultados_cotas)
 
 
 
-### PLOT####
-import matplotlib.pyplot as plt
-plt.figure(figsize=(14, 6))
-for col in df_cotas.columns:
-    plt.plot(df_cotas.index, df_cotas[col], label=col)
-
-plt.title('Cotas CDI e Estratégias')
-plt.xlabel('Data')
-plt.ylabel('Cota')
-plt.legend(ncol=3, fontsize=8)
-plt.grid(alpha=0.3)
-plt.tight_layout()
-plt.show()
-
-
+# ### PLOT####
+# plt.figure(figsize=(14, 6))
+# for col in df_cotas.columns:
+#     plt.plot(df_cotas.index, df_cotas[col], label=col)
+# plt.title('Cotas CDI e Estratégias')
+# plt.xlabel('Data')
+# plt.ylabel('Cota')
+# plt.legend(ncol=3, fontsize=8)
+# plt.grid(alpha=0.3)
+# plt.tight_layout()
+# save_path = r'C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\workinh\cotas_cdi_estrategias.png'
+# plt.savefig(save_path, dpi=300, bbox_inches='tight')
+# plt.show()
 
 
-#%% ### Fazer o for para diferentes HBOS periods
-
-def run_full_backtest(premia, di, cdi, n_hbos=52, n_contratos=1, stop_pct=0.05, valor_corretagem=20):
+#%% Função Final
+def run_all_backtest(
+    premia: pd.DataFrame,
+    di: pd.DataFrame,
+    cdi: pd.DataFrame,
+    n_hbos: int = 52,
+    bins: int = 20,
+    q: float = 0.95,
+    stop_pct: float = 0.05,
+    n_contratos: int = 1,
+    valor_corretagem: float = 20.0,
+    notional_contrato: float = 100_000.0,
+    plot: bool = False,
+    path_save: str = r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\workinh"
+):
     """
-    Executa o backtest completo para todas as maturidades de premia, calcula cotas da estratégia,
-    cotas CDI, excesso de retorno, volatilidade anualizada e Sharpe, e retorna um resumo.
-    
-    Parâmetros:
-    - premia: DataFrame de premia, colunas = maturidades
-    - di: DataFrame histórico do DI
-    - cdi: DataFrame histórico do CDI
-    - n_hbos: int, tamanho da janela para hbos_rolling
-    - n_contratos: int, número de contratos operados
-    - stop_pct: float, stop-loss percentual sobre o notional
-    - valor_corretagem: float, custo fixo de corretagem por operação
-    
-    Retorna:
-    - resultados_cotas: dict com DataFrames de cotas para cada maturidade
-    - df_resumo: DataFrame resumo com Sharpe final e retorno total por maturidade
+    Executa o pipeline completo: HBOS -> Backtest -> Cotas -> df_cotas.
+    Se plot=True, gera e salva o gráfico das cotas.
     """
-    # --- 1. Calcular HBOS rolling ---
+
+    # ======================================================
+    # 1. Calcula HBOS rolling
+    # ======================================================
     hbos = hbos_rolling(
         df=premia,
-        n=n_hbos,           
-        bins=20,
+        n=n_hbos,
+        bins=bins,
         binning="quantile",
-        q=0.95,
+        q=q,
         epsilon=1e-6,
         col_label=None
     )
-    
-    # --- 2. Rodar backtest para cada maturidade ---
+
+    # ======================================================
+    # 2. Executa backtest para cada maturidade
+    # ======================================================
     resultados = {}
     for maturity in premia.columns:
         maturity_int = int(maturity)
-        print(f'Rodando backtest para maturidade: {maturity_int} meses...')
+        print(f"Rodando backtest para maturidade {maturity_int} meses...")
         try:
             resultado = backtest_di(
                 di=di,
                 hbos=hbos,
+                cdi=cdi,
                 maturity_target=maturity_int,
                 n_contratos=n_contratos,
                 stop_pct=stop_pct,
@@ -1305,67 +1104,391 @@ def run_full_backtest(premia, di, cdi, n_hbos=52, n_contratos=1, stop_pct=0.05, 
             )
             resultados[maturity_int] = resultado
         except Exception as e:
-            print(f'Erro na maturidade {maturity_int}: {e}')
-    print('✅ Todos os backtests concluídos!')
+            print(f"❌ Erro na maturidade {maturity_int}: {e}")
 
-    # --- 3. Calcular cotas ---
+    print("✅ Todos os backtests concluídos!")
+
+    # ======================================================
+    # 3. Calcula cotas de todas as estratégias
+    # ======================================================
     resultados_cotas = {}
     for maturity, df_trading in resultados.items():
-        print(f'Calculando cotas para maturidade {maturity} meses...')
         try:
-            resultados_cotas[maturity] = calcular_cotas(df_trading, cdi)
+            resultados_cotas[maturity] = calcular_cotas(df_trading, notional_contrato)
         except Exception as e:
-            print(f'❌ Erro ao calcular cotas para maturidade {maturity}: {e}')
-    print('✅ Cálculo de cotas concluído para todas as maturidades!')
+            print(f"❌ Erro ao calcular cotas para maturidade {maturity}: {e}")
 
-    # --- 4. Criar resumo ---
-    dados_resumo = []
-    for maturity, df in resultados_cotas.items():
-        if df.empty:
-            continue
-        sharpe_final = df['sharpe'].dropna().iloc[-1] if not df['sharpe'].dropna().empty else np.nan
-        cota_final = df['cota_estrategia'].dropna().iloc[-1] if not df['cota_estrategia'].dropna().empty else np.nan
-        retorno_total = cota_final - 1 if pd.notna(cota_final) else np.nan
-        dados_resumo.append({
-            'maturidade': maturity,
-            'sharpe_final': sharpe_final,
-            'retorno_total': retorno_total
-        })
-    df_resumo = pd.DataFrame(dados_resumo).sort_values('maturidade').reset_index(drop=True)
+    print("✅ Cálculo de cotas concluído!")
 
-    return resultados_cotas, df_resumo
+    # ======================================================
+    # 4. Constrói df_cotas consolidado
+    # ======================================================
+    df_cotas = build_df_cotas(resultados_cotas)
+    print("✅ df_cotas consolidado com sucesso!")
 
-resultados_por_n = {}
+    # ======================================================
+    # 5. (Opcional) Gera e salva o gráfico
+    # ======================================================
+    if plot:
+        plt.figure(figsize=(14, 6))
+        for col in df_cotas.columns:
+            plt.plot(df_cotas.index, df_cotas[col], label=col)
 
-for n in range(13, 157, 13):  # 13, 26, 39, ..., 156
-    print(f'\n🔹 Rodando backtest com n_hbos = {n} semanas...')
+        plt.title("Cotas CDI e Estratégias")
+        plt.xlabel("Data")
+        plt.ylabel("Cota")
+        plt.legend(ncol=3, fontsize=8)
+        plt.grid(alpha=0.3)
+        plt.tight_layout()
+
+        fig_path = f"{path_save}\\cotas_backtest.png"
+        plt.savefig(fig_path, dpi=300, bbox_inches="tight")
+        plt.close()
+
+        print(f"📈 Gráfico salvo em: {fig_path}")
+
+    return df_cotas, resultados, resultados_cotas
+
+#df_cotas, resultados, resultados_cotas = run_all_backtest(premia, di, cdi)
+
+
+
+#%% 1. Run All + Resultados e analise
+
+# Imports
+
+### DI
+#di = pd.read_parquet(r"\\nas03\gestao_recursos\Pessoais\Bernardo\premia\data_di1.parquet")
+di = pd.read_parquet(r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\data_colection\data_di1.parquet")
+di.drop(columns={'price_previous', 'change', 'settlement_value'}, inplace=True)
+
+### Curva B3
+df_curves = r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\data_colection\curvas_b3.parquet"
+#df_curves = r"\\nas03\gestao_recursos\Pessoais\Bernardo\premia\curvas_b3.parquet"
+
+### CDI
+#cdi = pd.read_csv(r"\\nas03\gestao_recursos\Pessoais\Bernardo\premia\hist_cdi.csv", sep=';')
+cdi = pd.read_csv(r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\data_colection\hist_cdi.csv", sep=';')
+
+# RUN
+### Ajuste do df di
+di = add_vencimento_e_dus(di)
+
+### Model ACM
+acm, premia = run_acm(df_curves, di)
+
+### Teste de normalidade JB
+cumulative_normality = normality_test_cumulative_data(premia)
+#plot_normality_frequency_percent()
+
+### Teste ADF
+adf_full_all = adf_test_full_all(
+    premia,
+    alpha=0.05,
+    regression="c",
+    autolag="AIC"
+)
+
+### Roda Backtest com diferentes n_hbos
+
+n_hbos_values = list(range(13, 157, 13))
+# n_hbos_values = list(range(13, 27, 13))
+
+resultados_df_cotas = {}
+resultados_backtests = {}
+resultados_cotas = {}
+
+for n in n_hbos_values:
+    print(f"\nRodando backtest com n_hbos = {n}...\n")
     try:
-        resultados_cotas, df_resumo = run_full_backtest(premia, di, cdi, n_hbos=n)
-        resultados_por_n[n] = {
-            'cotas': resultados_cotas,
-            'resumo': df_resumo
-        }
+        df_cotas, resultados, resultados_cotas_n = run_all_backtest(
+            premia=premia,
+            di=di,
+            cdi=cdi,
+            n_hbos=n,
+            plot=False  # deixa False pra não gerar 80 gráficos
+        )
+
+        # Armazena resultados
+        resultados_df_cotas[n] = df_cotas
+        resultados_backtests[n] = resultados
+        resultados_cotas[n] = resultados_cotas_n
+
+        print(f"✅ Concluído para n_hbos = {n}")
+
     except Exception as e:
-        print(f'❌ Erro ao rodar n_hbos={n}: {e}')
+        print(f"❌ Erro em n_hbos = {n}: {e}")
 
-print('✅ Todos os backtests concluídos para os diferentes tamanhos de janela!')
+#%% 1.1: Data analytics: analise dos inputs curva
+def plot_data(data):
+    # Ler dados
+    df = pd.read_parquet(data)
+    df['Date'] = pd.to_datetime(df['Date'], dayfirst=True)
+    df['Year'] = df['Date'].dt.year
+
+    # Selecionar primeira curva de cada ano
+    first_curve_each_year = df.groupby('Year').first().reset_index()
+
+    # Todas as maturidades disponíveis
+    maturities = [int(col[1:]) for col in df.columns if col.startswith('M')]
+
+    # --- Gráfico 1: Curvas completas ---
+    plt.figure(figsize=(14,7))
+    cmap = plt.get_cmap('tab20')  # paleta de cores
+    colors = [cmap(i % 20) for i in range(len(first_curve_each_year))]
+    
+    for i, (_, row) in enumerate(first_curve_each_year.iterrows()):
+        rates = row[[col for col in df.columns if col.startswith('M')]].values
+        plt.plot(maturities, rates, label=str(row['Year']), color=colors[i], linewidth=2)
+
+    # Layout
+    plt.title('Interest Rate Curves', fontsize=16)
+    plt.xlabel('Maturity (months)', fontsize=14)
+    plt.ylabel('Rate (%)', fontsize=14)
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.xticks(fontsize=12)
+    plt.yticks(fontsize=12)
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=12)
+    plt.tight_layout()
+    
+    # Salvar gráfico 1
+    output_path1 = r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\graficos\plot_curvas.png"
+    Path(output_path1).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path1, dpi=300)
+    plt.close()
+    print(f"Gráfico completo salvo em: {output_path1}")
+
+    # --- Gráfico 2: Evolução de maturidades específicas ---
+    selected_maturities = [1, 12, 36, 60, 120]
+    
+    plt.figure(figsize=(14,7))
+    for maturity in selected_maturities:
+        col_name = f'M{maturity}'
+        if col_name in df.columns:
+            plt.plot(df['Date'], df[col_name], label=f'{maturity} month' if maturity == 1 else f'{maturity} months', linewidth=2)
+    
+    # Layout
+    plt.title('Interest Rate Evolution for Selected Maturities', fontsize=16)
+    plt.xlabel('Date', fontsize=14)
+    plt.ylabel('Rate (%)', fontsize=14)
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.xticks(fontsize=12)
+    plt.yticks(fontsize=12)
+    plt.legend(fontsize=12)
+    plt.tight_layout()
+    
+    # Salvar gráfico 2
+    output_path2 = r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\graficos\plot_vertices.png"
+    plt.savefig(output_path2, dpi=300)
+    plt.close()
+    print(f"Gráfico de maturidades selecionadas salvo em: {output_path2}")
+
+    return df
+
+def descriptive_stats(df, maturities=None):
+    if maturities is None:
+        maturities = [col for col in df.columns if col.startswith('M')]
+    else:
+        maturities = [f'M{m}' if isinstance(m, int) else m for m in maturities]
+
+    stats_list = []
+    for col in maturities:
+        rates = df[col]
+        stats_list.append({
+            'Maturity (Months)': int(col[1:]),  # 'M1' = 1 mês
+            'Mean': round(rates.mean(), 2),
+            'Std': round(rates.std(), 2),
+            'Min': round(rates.min(), 2),
+            'Max': round(rates.max(), 2),
+            '25%': round(rates.quantile(0.25), 2),
+            '50%': round(rates.median(), 2),
+            '75%': round(rates.quantile(0.75), 2)
+        })
+
+    stats_df = pd.DataFrame(stats_list)
+    stats_df = stats_df.sort_values('Maturity (Months)').reset_index(drop=True)
+    return stats_df
+
+# Plot
+#df = plot_data(df_curves)
+
+# Stats 
+#stats_df = descriptive_stats(df, [1, 12, 36, 60, 120])
+#%% 1.2 Premia: analise dos resultados
+
+def plot_premia(premia):
+    # Garantir que Date seja datetime
+    premia.index = pd.to_datetime(premia.index, dayfirst=True)
+    premia['Year'] = premia.index.year
+
+    # Selecionar primeira observação de cada ano
+    first_curve_each_year = premia.groupby('Year').first().reset_index()
+
+    # Todas as maturidades disponíveis
+    maturities = [col for col in premia.columns if isinstance(col, (int, float))]
+
+    # --- Gráfico 1: Curvas completas ---
+    plt.figure(figsize=(14,7))
+    cmap = plt.get_cmap('tab20')
+    colors = [cmap(i % 20) for i in range(len(first_curve_each_year))]
+    
+    for i, (_, row) in enumerate(first_curve_each_year.iterrows()):
+        rates = row[maturities].values
+        plt.plot(maturities, rates, label=str(int(row['Year'])), color=colors[i], linewidth=2)
 
 
+    plt.title('Term Premium Curves', fontsize=16)
+    plt.xlabel('Maturity (months)', fontsize=14)
+    plt.ylabel('Rate', fontsize=14)
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.xticks(fontsize=12)
+    plt.yticks(fontsize=12)
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=12)
+    plt.tight_layout()
+
+    output_path1 = r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\graficos\plot_curvas_premia.png"
+    Path(output_path1).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path1, dpi=300)
+    plt.close()
+    print(f"Gráfico completo salvo em: {output_path1}")
+
+    # --- Gráfico 2: Evolução de maturidades específicas ---
+    selected_maturities = [6, 12, 36, 60, 120]  # adaptado para premia
+    
+    plt.figure(figsize=(14,7))
+    for maturity in selected_maturities:
+        if maturity in premia.columns:
+            plt.plot(premia.index, premia[maturity], label=f'{maturity} months', linewidth=2)
+
+    plt.title('Term Premium Evolution for Selected Maturities', fontsize=16)
+    plt.xlabel('Date', fontsize=14)
+    plt.ylabel('Rate', fontsize=14)
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.xticks(fontsize=12)
+    plt.yticks(fontsize=12)
+    plt.legend(fontsize=12)
+    plt.tight_layout()
+
+    output_path2 = r"C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\graficos\plot_vertices_premia.png"
+    plt.savefig(output_path2, dpi=300)
+    plt.close()
+    print(f"Gráfico de maturidades selecionadas salvo em: {output_path2}")
+
+    return premia
+
+def descriptive_stats_premia(premia, maturities=None):
+    if maturities is None:
+        maturities = [col for col in premia.columns if isinstance(col, (int, float))]
+    
+    stats_list = []
+    for col in maturities:
+        rates = premia[col]
+        stats_list.append({
+            'Maturity (Months)': int(col),
+            'Mean': round(rates.mean(), 4),
+            'Std': round(rates.std(), 4),
+            'Min': round(rates.min(), 4),
+            'Max': round(rates.max(), 4),
+            '25%': round(rates.quantile(0.25), 4),
+            '50%': round(rates.median(), 4),
+            '75%': round(rates.quantile(0.75), 4)
+        })
+
+    stats_df = pd.DataFrame(stats_list)
+    stats_df = stats_df.sort_values('Maturity (Months)').reset_index(drop=True)
+    return stats_df
+
+premia = plot_premia(premia)
+stats = descriptive_stats_premia(premia)
+#%% 1.3: JB Normality + ADF
+
+teste_jb = normality_test_full(premia)
+
+teste_adf = adf_test_full_all(premia)
+#%% 1.4: hbos
+
+# Agregar resultados
+dfs_agregados = []
+
+# Percorre cada n_hbos e seus resultados
+for n_hbos, resultados_dict in resultados_backtests.items():
+    for nome_df, df in resultados_dict.items():
+        if isinstance(df, pd.DataFrame):
+            # Mantém apenas as colunas desejadas, se existirem
+            colunas = ['refdate', 'value', 'outlier_type', 'maturity', 'posicao', 'notional', 'pnl_final', 'pnl_final_acum']
+            colunas_existentes = [c for c in colunas if c in df.columns]
+
+            # Cria cópia filtrada
+            df_filtrado = df[colunas_existentes].copy()
+
+            # Adiciona coluna com o n_hbos
+            df_filtrado['n_hbos'] = n_hbos
+
+            # Adiciona à lista
+            dfs_agregados.append(df_filtrado)
+
+# Concatena tudo num único DataFrame final
+df_agregado = pd.concat(dfs_agregados, ignore_index=True)
+
+print(df_agregado.head())
 
 
-# agrega
-# Lista para guardar todos os resumos
-resumo_consolidado = []
+# Mostrar dinamica do hbos em 60 meses com 52
+hbos_df = df_agregado[df_agregado['maturity'] == 60]
+hbos_df = hbos_df[hbos_df['n_hbos'] == 52]
 
-for n, resultados in resultados_por_n.items():
-    df_resumo = resultados['resumo'].copy()
-    df_resumo['n_hbos'] = n
-    resumo_consolidado.append(df_resumo)
 
-# Concatenar tudo em um único DataFrame
-df_resumo_consolidado = pd.concat(resumo_consolidado, ignore_index=True)
+def plot_outliers_hbos(hbos_df, maturidade=None, output_dir=r'C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\graficos'):
+    """
+    Gera e salva um gráfico mostrando os outliers (max e min) sobre a série 'value'
+    para uma dada maturidade contida no DataFrame hbos_df.
+    """
 
-# Ordenar por maturidade e n_hbos
-df_resumo_consolidado = df_resumo_consolidado.sort_values(['maturidade', 'n_hbos']).reset_index(drop=True)
+    os.makedirs(output_dir, exist_ok=True)
 
-df_resumo_consolidado.head()
+    # Se a maturidade não for especificada, usa a primeira do DataFrame
+    if maturidade is None:
+        maturidade = hbos_df['maturity'].iloc[0]
+
+    # Filtra a maturidade escolhida
+    df_plot = hbos_df[hbos_df['maturity'] == maturidade].copy()
+
+    # Define parâmetros
+    n_hbos = df_plot['n_hbos'].iloc[0] if 'n_hbos' in df_plot.columns else None
+
+    # Configura o estilo
+    plt.figure(figsize=(14, 7))
+    sns.set_style('whitegrid')
+
+    # Linha base da série
+    plt.plot(df_plot['refdate'], df_plot['value'], color='black', linewidth=1.4, label='Term Premium')
+
+    # Marca outliers
+    df_out_max = df_plot[df_plot['outlier_type'] == 'max']
+    df_out_min = df_plot[df_plot['outlier_type'] == 'min']
+
+    plt.scatter(df_out_max['refdate'], df_out_max['value'], color='red', marker='o', s=45, label='Outlier max')
+    plt.scatter(df_out_min['refdate'], df_out_min['value'], color='green', marker='o', s=45, label='Outlier min')
+
+    # Título e eixos
+    title = f'Outliers - Maturity {maturidade} months'
+    if n_hbos is not None:
+        title += f' (n_hbos={n_hbos})'
+    plt.title(title, fontsize=14)
+    plt.xlabel('Data', fontsize=12)
+    plt.ylabel('Term Premium (%)', fontsize=12)
+    plt.legend()
+    plt.tight_layout()
+
+    # Caminho e salvamento
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+    file_name = f'outliers_m{maturidade}_nhbos{n_hbos}_{timestamp}.png' if n_hbos is not None else f'outliers_m{maturidade}_{timestamp}.png'
+    file_path = os.path.join(output_dir, file_name)
+
+    plt.savefig(file_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+    print(f'✅ Gráfico salvo em: {file_path}')
+    return file_path
+
+plot_outliers_hbos(hbos_df, maturidade=60)
