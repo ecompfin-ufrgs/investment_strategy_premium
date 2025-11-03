@@ -9,6 +9,8 @@ from scipy.stats import rankdata
 from pandas.tseries.offsets import BMonthBegin
 import pandas_market_calendars as pmc
 pd.set_option('display.max_columns', None)
+import os
+import seaborn as sns
 
 #%% DI1 - Import + ajusta
 
@@ -1491,4 +1493,165 @@ def plot_outliers_hbos(hbos_df, maturidade=None, output_dir=r'C:\Users\Bernardo 
     print(f'✅ Gráfico salvo em: {file_path}')
     return file_path
 
-plot_outliers_hbos(hbos_df, maturidade=60)
+#plot_outliers_hbos(hbos_df, maturidade=60)
+
+def count_outliers(df: pd.DataFrame):
+    """
+    Conta o número de outliers ('min' e 'max') separadamente e retorna dois DataFrames
+    prontos para plotagem (maturity no eixo y, n_hbos no eixo x).
+
+    Parâmetros
+    ----------
+    df : pd.DataFrame
+        DataFrame contendo colunas ['maturity', 'n_hbos', 'outlier_type'].
+
+    Retorna
+    -------
+    tuple(pd.DataFrame, pd.DataFrame)
+        Dois DataFrames: (df_min, df_max)
+    """
+    # Filtrar outliers
+    df_outliers = df[df['outlier_type'].isin(['min', 'max'])]
+
+    # Contar por maturity e n_hbos
+    tabela = (
+        df_outliers
+        .groupby(['maturity', 'n_hbos', 'outlier_type'])
+        .size()
+        .reset_index(name='count')
+    )
+
+    # Criar tabela de min
+    df_min = tabela[tabela['outlier_type'] == 'min'].pivot(
+        index='maturity',
+        columns='n_hbos',
+        values='count'
+    ).fillna(0).astype(int)
+
+    # Criar tabela de max
+    df_max = tabela[tabela['outlier_type'] == 'max'].pivot(
+        index='maturity',
+        columns='n_hbos',
+        values='count'
+    ).fillna(0).astype(int)
+
+    return df_min, df_max
+
+# Uso
+df_min, df_max = count_outliers(df_agregado)
+
+#%% 1.5 backtest results
+
+# Backtest maturity = 60, hbos = 52
+plot_backtest = resultados_backtests[52][60]
+
+def plot_trades(df: pd.DataFrame,
+                                    value_col: str = 'pnl_final_acum',
+                                    date_col: str = 'refdate',
+                                    pos_col: str = 'posicao',
+                                    stop_col: str = 'stop_flag',
+                                    save_path: str = r'C:\Users\Bernardo Machado\OneDrive\Área de Trabalho\TCC\graficos',
+                                    filename: str = 'excess_returns_trades_stops_reversed.png'):
+    """
+    Plota excess returns com trades invertidos (1 ↔ -1) e stops.
+    
+    Compra: posicao muda de 0 → -1
+    Venda: posicao muda de 0 → 1
+    Stop: stop_flag == True
+    """
+    df[date_col] = pd.to_datetime(df[date_col])
+    
+    # Detectar trades invertidos
+    df['prev_pos'] = df[pos_col].shift(1).fillna(0)
+    buys = df[(df['prev_pos'] == 0) & (df[pos_col] == -1)]
+    sells = df[(df['prev_pos'] == 0) & (df[pos_col] == 1)]
+    stops = df[df[stop_col] == True]
+    
+    plt.figure(figsize=(14,6))
+    
+    # Linha de excess returns
+    plt.plot(df[date_col], df[value_col], color='blue', label='Excess Returns (BRL)')
+    
+    # Plotar trades invertidos
+    plt.scatter(buys[date_col], buys[value_col], color='green', label='Buy', zorder=5)
+    plt.scatter(sells[date_col], sells[value_col], color='red', label='Sell', zorder=5)
+    
+    # Plotar stops
+    plt.scatter(stops[date_col], stops[value_col], color='black', marker='x', s=80, label='Stop', zorder=6)
+    
+    # Ajustar eixo x para anos
+    plt.gca().xaxis.set_major_formatter(plt.matplotlib.dates.DateFormatter('%Y'))
+    plt.xticks(rotation=45)
+    
+    plt.xlabel('Year')
+    plt.ylabel('Excess Returns')
+    plt.title('Excess Returns with Trades and Stops (Maturity = 60 months, Outlier Rolling Window = 52 weeks)')
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    
+    os.makedirs(save_path, exist_ok=True)
+    plt.savefig(os.path.join(save_path, filename), dpi=300)
+    plt.show()
+    
+    df.drop(columns='prev_pos', inplace=True)
+
+    
+plot_trades(plot_backtest)
+
+
+
+##### Sharpe ratios
+
+# Lista para armazenar os dfs meltados
+dfs_melt = []
+
+for n_hbos, df in resultados_df_cotas.items():
+    # Resetar índice para manter _dt como coluna
+    df_reset = df.reset_index()
+    
+    # Meltar o dataframe
+    df_melt = df_reset.melt(id_vars='_dt', var_name='estrategia', value_name='cota')
+    
+    # Adicionar a coluna n_hbos
+    df_melt['n_hbos'] = n_hbos
+    
+    # Adicionar à lista
+    dfs_melt.append(df_melt)
+
+# Concatenar todos
+sharpe_df = pd.concat(dfs_melt, ignore_index=True)
+
+sharpe_df.dropna(subset='cota', inplace=True)
+sharpe_df.rename(columns={'_dt':'DT'}, inplace=True)
+sharpe_df['DT'] = pd.to_datetime(sharpe_df['DT'])
+
+sharpe_df['retorno'] = sharpe_df.groupby(['estrategia', 'n_hbos'])['cota'].pct_change()
+sharpe_df['volatilidade'] = sharpe_df.groupby(['estrategia', 'n_hbos'])['retorno'].transform('std')
+sharpe_df['volatilidade'] = sharpe_df['volatilidade'] * (252 ** 0.5)
+
+sharpe_df = sharpe_df[sharpe_df['DT'] == sharpe_df['DT'].max()]
+
+sharpe_df['excess_return'] = sharpe_df['cota'] - 1
+sharpe_df['sharpe'] = sharpe_df['excess_return'] / sharpe_df['volatilidade']
+
+sharpe_df['maturity'] = sharpe_df['estrategia'].str.replace('cota_estrategia_', '', regex=False).astype(int)
+sharpe_df = sharpe_df[['maturity', 'n_hbos', 'excess_return', 'volatilidade', 'sharpe']]
+
+pivot_sharpe = sharpe_df.pivot(
+    index='n_hbos', 
+    columns='maturity', 
+    values='sharpe'
+)
+
+pivot_vol = sharpe_df.pivot(
+    index='n_hbos', 
+    columns='maturity', 
+    values='volatilidade'
+)
+
+pivot_excess_return = sharpe_df.pivot(
+    index='n_hbos', 
+    columns='maturity', 
+    values='excess_return'
+)
